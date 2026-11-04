@@ -1,0 +1,108 @@
+# Bridge for PC
+
+The PC program of [Bridge](../README.md): a window for sending text and files to your phone and to other PCs on your home
+network. Installers are on the [releases page](../../../releases); this page explains how to use the program.
+
+## First start
+
+Bridge asks where received files should be saved. The suggestion is a `Bridge` folder inside your Downloads folder.
+Click **Choose folder...** to pick another one, then **Continue**. You can change it later in *Settings > Received files*.
+New files go to the new folder; files you already received stay where they are.
+
+If your firewall asks, allow Bridge on **private networks**. Bridge uses TCP port 8443 (phones), TCP port 8444
+(other PCs) and UDP port 5353 (mDNS, how your devices find each other). Only one copy of Bridge can run at a time.
+
+## Pair a phone
+
+1. Click **Pair a device** (under the search box) and choose **Pair a phone**. A QR code appears.
+2. In the Bridge app on the phone, scan the code. The phone appears in the sidebar under its own name (for example
+   "Pixel 8"). **Rename** changes the name.
+
+The code expires after a few minutes; a new one is shown each time. See the [Android guide](../android/README.md) for the phone side.
+
+## Pair another PC
+
+1. On both PCs click **Pair a device > Pair a PC**. Each PC lists the other under **Nearby**. If it does not appear,
+   choose **Pair by address...** and enter the address shown in the other PC's *Settings*.
+2. Click **Pair** on one PC. The other PC shows "wants to pair" and brings its window forward.
+3. Both screens show the **same six-digit code**. If the codes are the same, click *Codes match* on both PCs.
+   Only then are the PCs paired. If they differ, click *Cancel*: somebody may be in the way.
+
+What another PC can see of you: your PC's name, nothing else. Not your phone, your history or your files.
+
+## Using the window
+
+**The sidebar** lists your paired phones and PCs with their last activity and a short preview. **Search** filters them by
+name or last message. **Settings** is at the bottom.
+
+**A conversation** shows your messages on the right in blue and theirs on the left.
+
+- **Send text:** type in the box and press *Send* (or Ctrl+Enter; the key is a setting). **Clipboard** (phones only) sends
+  the text you copied.
+- **Send files:** click **Files**, or drag files onto the window.
+- **Reply, copy, delete:** hover a message to see the buttons, or double-click it to reply. Delete removes the message on both devices.
+- **Open a file** by clicking it. Hover it for **Show in folder** and a red **x** to delete it. Programs and scripts
+  (`.exe`, `.sh`, `.bat` and so on) are never started from Bridge; clicking them shows their folder instead.
+- **Links:** web addresses in messages are underlined; click one to open it in your browser.
+- **Chat height:** drag the small grip under the chat. Double-click it to make the chat follow the window again.
+- **Notes and files**, below the chat, is the history with *Copy*, *Open* and *Show folder* for every item.
+- **Zoom:** Ctrl + mouse wheel, or Ctrl +/- and Ctrl 0, from 60 to 200 %.
+
+**Receiving files from another PC:** a card says "NAME wants to send a file" with **Accept** and **Decline**. Nothing is
+received until you accept, and offers expire after 15 minutes. You can turn the question off in *Settings > Ask before
+receiving a file*. A transfer in progress can be cancelled by either side.
+
+**Unpair** (right-click a device, or use the button in its conversation) removes the pairing and the conversation here.
+A PC you unpair is told and removes its side too; a phone notices the next time it connects.
+
+## Tray icon and hotkey
+
+- The **tray icon** (right-click) has *Open Bridge*, *Send clipboard to phone* and *Quit*. With *Keep running in the tray*
+  turned on in Settings, closing the window keeps Bridge running.
+- The **hotkey** (default Ctrl+Alt+B) sends the text you copied to your phone from anywhere on the desktop.
+  *Settings > Send clipboard to phone hotkey* opens a window where you press your own combination: hold as many keys as
+  you like, then click *Accept*. *Reset* restores the default. The switch next to it turns the hotkey off.
+  On a Mac, combinations that use plain letters need *Accessibility* permission (System Settings > Privacy & Security).
+
+## Settings
+
+This PC's name, **highlight color** (seven ready-made colors or your own), the key that sends a message, the hotkey,
+*Visible to other PCs* (switch it off and other PCs stop finding you under Nearby; PCs already paired still work),
+tray behavior, the folder for received files, this PC's addresses and its **certificate fingerprint**. The fingerprint is
+how phones and other PCs recognize this PC; compare it with the one the phone shows if you want to be sure.
+
+## Where Bridge keeps things
+
+- **Received files:** the folder you chose at first start (default `Downloads/Bridge`).
+- **Keys, paired devices, history and settings:** the `pcphone-bridge` folder in your user configuration folder
+  (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `~/.config` on Linux). Uninstalling does not remove it.
+  Delete that folder to start over from scratch.
+
+## Command-line options
+
+Normally not needed. `bridge-app --hidden` starts in the tray. `--lan-host 192.168.1.20` sets the address shown to phones if
+the detected one is wrong. `--lan-port` (default 8443) and `--peer-port` (default 8444) change the ports, `--inbox <folder>`
+and `--data-dir <folder>` change where things are kept, and `--no-discovery` stops Bridge from announcing itself and
+looking for other PCs.
+
+## Linux notes
+
+- The tray icon needs a system tray. KDE, XFCE, Cinnamon and most others have one; GNOME needs the AppIndicator extension.
+  Without a tray, closing the window quits Bridge.
+- The global hotkey needs X11 (or XWayland). On a pure Wayland session Settings shows "Hotkey unavailable"; everything else works.
+- The file picker uses the desktop portal (`xdg-desktop-portal`), which current desktops include.
+
+## If something does not work
+
+- **The phone cannot connect:** phone and PC must be on the same Wi-Fi or network, and the firewall must allow Bridge on
+  private networks (ports above). "Guest" Wi-Fi or "client isolation" settings in the router block devices from seeing each other.
+- **Another PC does not show under Nearby:** some routers block the multicast messages used for discovery. Use
+  *Pair by address...* instead.
+- **The address in the QR code is wrong** (several network cards or a VPN): start Bridge with `--lan-host` and the right address.
+- **A file offer disappeared:** unanswered offers are dropped after 15 minutes or when either PC restarts. Send it again.
+
+## Limits
+
+- Whole folders cannot be sent; zip them first.
+- PC-to-PC works on one network and with IPv4.
+- Deleting a message while the other PC is offline does not reach that PC later.

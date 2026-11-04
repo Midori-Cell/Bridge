@@ -1,0 +1,41 @@
+# Maintainer: Midori 148465040+Midori-Cell@users.noreply.github.com
+#
+# Builds Bridge from a release tag. For the AUR: replace YOUR-GITHUB-NAME below, fill in the checksum with
+# `updpkgsums`, and run `makepkg --printsrcinfo > .SRCINFO`. The release workflow builds this same file in
+# an Arch container (it puts the tarball of the tagged source next to the PKGBUILD, so nothing is downloaded).
+_owner=Midori
+_repo=bridge
+pkgname=bridge-app
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Send text and files between your PC, your phone and other PCs on your home network'
+arch=('x86_64' 'aarch64')
+url="https://github.com/${_owner}/${_repo}"
+license=('MIT')
+depends=('gtk3' 'libayatana-appindicator' 'xdotool' 'gcc-libs' 'glibc')
+makedepends=('cargo')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "${_repo}-${pkgver}/desktop"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${_repo}-${pkgver}/desktop"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p bridge-gui
+}
+
+package() {
+  cd "${_repo}-${pkgver}"
+  install -Dm755 desktop/target/release/bridge-app "${pkgdir}/usr/bin/bridge-app"
+  install -Dm644 packaging/linux/bridge.desktop "${pkgdir}/usr/share/applications/bridge.desktop"
+  for size in 16 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/bridge-${size}.png" "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/bridge.png"
+  done
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

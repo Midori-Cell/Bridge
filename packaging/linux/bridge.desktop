@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Bridge
+GenericName=PC and phone transfer
+Comment=Send text and files between your PC, your phone and other PCs on your home network
+Exec=bridge-app
+Icon=bridge
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+Keywords=transfer;phone;android;clipboard;files;
+StartupWMClass=bridge

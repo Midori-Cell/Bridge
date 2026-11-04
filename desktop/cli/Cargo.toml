@@ -1,0 +1,17 @@
+[package]
+name = "bridge-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless PC agent for the bridge (step 1 test client; the native window comes next)."
+
+[[bin]]
+name = "bridge"
+path = "src/main.rs"
+
+[dependencies]
+bridge-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "io-std", "io-util", "sync", "time"] }
+clap = { version = "4", features = ["derive"] }
+qrcode = { version = "0.14", default-features = false }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

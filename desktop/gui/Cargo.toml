@@ -1,0 +1,55 @@
+[package]
+name = "bridge-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bridge: send text and files between your PC, your phone and other PCs on your home network."
+
+[[bin]]
+name = "bridge-app"
+path = "src/main.rs"
+
+[dependencies]
+bridge-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+eframe = "0.37"
+egui = "0.37"
+clap = { version = "4", features = ["derive"] }
+qrcode = { version = "0.14", default-features = false }
+tray-icon = "0.26"
+global-hotkey = "0.9"
+device_query = "4"
+rfd = "0.17"
+arboard = { version = "3", features = ["wayland-data-control"] }
+open = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+# The .deb package (cargo deb -p bridge-gui). Paths are relative to this folder.
+[package.metadata.deb]
+name = "bridge-app"
+maintainer = "Bridge contributors <noreply@users.noreply.github.com>"
+section = "net"
+priority = "optional"
+depends = "$auto, libayatana-appindicator3-1 | libappindicator3-1, libxdo3"
+extended-description = """\
+Everything is encrypted and nothing goes through the internet. The program has a window with a chat per device, \
+drag-and-drop for files, a tray icon, and a global hotkey that sends the clipboard to the phone. \
+Pair an Android phone by scanning a QR code."""
+assets = [
+    ["target/release/bridge-app", "usr/bin/", "755"],
+    ["../../packaging/linux/bridge.desktop", "usr/share/applications/bridge.desktop", "644"],
+    ["../../packaging/icons/bridge-16.png", "usr/share/icons/hicolor/16x16/apps/bridge.png", "644"],
+    ["../../packaging/icons/bridge-32.png", "usr/share/icons/hicolor/32x32/apps/bridge.png", "644"],
+    ["../../packaging/icons/bridge-48.png", "usr/share/icons/hicolor/48x48/apps/bridge.png", "644"],
+    ["../../packaging/icons/bridge-64.png", "usr/share/icons/hicolor/64x64/apps/bridge.png", "644"],
+    ["../../packaging/icons/bridge-128.png", "usr/share/icons/hicolor/128x128/apps/bridge.png", "644"],
+    ["../../packaging/icons/bridge-256.png", "usr/share/icons/hicolor/256x256/apps/bridge.png", "644"],
+    ["../../packaging/icons/bridge-512.png", "usr/share/icons/hicolor/512x512/apps/bridge.png", "644"],
+    ["../../LICENSE", "usr/share/doc/bridge-app/copyright", "644"],
+]

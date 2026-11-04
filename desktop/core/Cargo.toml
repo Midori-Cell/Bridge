@@ -1,0 +1,39 @@
+[package]
+name = "bridge-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pairing, pinned TLS, text and resumable file transfer between a PC and a phone."
+
+[lib]
+name = "bridge_core"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "time", "sync"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
+axum = "0.8"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service", "server", "http1"] }
+futures-util = "0.3"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+subtle = "2"
+thiserror = "2"
+tracing = "0.1"
+dirs = "6"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots", "stream", "json"] }
+mdns-sd = "0.21.7"
+gethostname = "1.1.0"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }

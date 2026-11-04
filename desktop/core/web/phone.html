@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bridge - Phone test page</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <div class="row">
+    <h1 class="grow">Bridge</h1>
+    <span class="dot" id="dot"></span>
+    <span class="muted" id="status">Not paired</span>
+  </div>
+
+  <section class="card hidden" id="pairCard">
+    <h2>Pair with your PC</h2>
+    <p class="muted">Scan the QR code shown on your PC, or type the code from the PC screen.</p>
+    <input type="text" id="code" placeholder="Pairing code" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="devName" class="grow" placeholder="This phone's name" autocomplete="off">
+      <button class="primary" id="pairBtn">Pair</button>
+    </div>
+    <p class="err" id="pairErr"></p>
+  </section>
+
+  <section class="card hidden" id="sendCard">
+    <h2>Send to PC</h2>
+    <textarea id="text" placeholder="Type a note or paste text"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" id="sendBtn">Send text</button>
+      <button id="pasteBtn">Paste</button>
+      <button id="filesBtn">Choose files</button>
+      <input type="file" id="fileInput" multiple class="hidden">
+      <span class="grow"></span>
+      <button class="danger" id="unpairBtn">Unpair</button>
+    </div>
+    <p class="err" id="sendErr"></p>
+    <div id="uploads" class="notes"></div>
+  </section>
+
+  <section class="card hidden" id="notesCard">
+    <h2>Notes and files</h2>
+    <div id="notes" class="notes"><span class="muted">Nothing yet.</span></div>
+  </section>
+</main>
+<script src="/phone.js"></script>
+</body>
+</html>

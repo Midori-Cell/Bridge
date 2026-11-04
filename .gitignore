@@ -1,0 +1,18 @@
+# Rust
+/desktop/target/
+# Android
+*.iml
+.gradle/
+local.properties
+/android/build/
+/android/app/build/
+.idea/
+.externalNativeBuild
+.cxx
+# signing keys must never be committed
+*.jks
+*.keystore
+keystore.properties
+# misc
+.DS_Store
+/dist/
