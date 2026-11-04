@@ -6,7 +6,7 @@
 _owner=Midori
 _repo=bridge
 pkgname=bridge-app
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc='Send text and files between your PC, your phone and other PCs on your home network'
 arch=('x86_64' 'aarch64')
@@ -14,6 +14,7 @@ url="https://github.com/${_owner}/${_repo}"
 license=('MIT')
 depends=('gtk3' 'libayatana-appindicator' 'xdotool' 'gcc-libs' 'glibc')
 makedepends=('cargo')
+options=('!lto')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
