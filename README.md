@@ -10,6 +10,27 @@ Everything is encrypted, nothing goes through the internet, and no account is ne
 
 **Bridge never connects to the internet.** It has no update check, no telemetry and no account. To update, download the
 new version from the [releases page](../../releases) and install it over the old one.
+<table>
+  <tr>
+    <p align="center">
+<img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/f490a150-0ac8-4d26-97b0-4662b2f668bc" /> <img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/0b9ae41b-e0a6-4173-876c-af3ffa9efbbb" />
+      </p>
+      </tr>
+</table>
+<table>
+  <tr>
+    <p align="center">
+<img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/08621a44-1b0a-4343-a8a4-ebc300a7c034" /> <img width="415" height="317" alt="Pic3" src="https://github.com/user-attachments/assets/bccb030f-015a-497a-a6a6-1765091889f8" />
+      </p>
+          </tr>
+</table>
+<p align="center">
+<img width="210" height="440" alt="Screenshot_20261104-034028_Bridge" src="https://github.com/user-attachments/assets/145392a1-71d0-48ad-9d5e-1c0c759e1fcf" />
+<img width="210" height="440" alt="Screenshot_20261104-033702_Bridge" src="https://github.com/user-attachments/assets/5cc47bf4-5817-4229-9847-065363fd44f7" />
+</p>
+
+
+
 
 ## Install
 
