@@ -1,12 +1,12 @@
-# Maintainer: Midori 148465040+Midori-Cell@users.noreply.github.com
+# Maintainer: YOUR NAME <you@example.com>
 #
 # Builds Bridge from a release tag. For the AUR: replace YOUR-GITHUB-NAME below, fill in the checksum with
 # `updpkgsums`, and run `makepkg --printsrcinfo > .SRCINFO`. The release workflow builds this same file in
 # an Arch container (it puts the tarball of the tagged source next to the PKGBUILD, so nothing is downloaded).
-_owner=Midori
+_owner=YOUR-GITHUB-NAME
 _repo=bridge
 pkgname=bridge-app
-pkgver=0.3.2
+pkgver=0.3.4
 pkgrel=1
 pkgdesc='Send text and files between your PC, your phone and other PCs on your home network'
 arch=('x86_64' 'aarch64')
@@ -14,6 +14,7 @@ url="https://github.com/${_owner}/${_repo}"
 license=('MIT')
 depends=('gtk3' 'libayatana-appindicator' 'xdotool' 'gcc-libs' 'glibc')
 makedepends=('cargo')
+# Arch builds C code with -flto by default; the linker used for Rust cannot read that, so ring (the TLS crypto) fails to link.
 options=('!lto')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 sha256sums=('SKIP')

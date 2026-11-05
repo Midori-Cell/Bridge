@@ -72,7 +72,21 @@ impl App {
                 widgets::grouped(ui, |g| g.row(|ui| self.pc_row(ui, pc)));
             }
 
-            widgets::section(ui, &format!("CHAT WITH {}", c.name.to_uppercase()));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("CHAT WITH {}", c.name.to_uppercase())).small().strong().color(palette(ui).label2));
+                widgets::trailing(ui, |ui| {
+                    ui.add_space(4.0);
+                    if widgets::plain(ui, "Clear chat").on_hover_text("Empty the chat on this PC. \"Notes and files\" below keeps its entries, and the other side keeps its copy.").clicked() {
+                        if c.phone {
+                            self.hub.bridge.clear_chat(&c.id);
+                        } else {
+                            self.hub.bridge.clear_peer_chat(&c.id);
+                        }
+                    }
+                });
+            });
             let used = ui.cursor().min.y - top;
             // Without a height set by the user the chat follows the window until it is AUTO_MAX high;
             // after that a taller window shows more of the notes instead.
@@ -90,7 +104,16 @@ impl App {
                 self.jump_after = None;
             }
             let (text, hint) = if c.phone { (&mut self.phone_text, "Type or paste a note for the phone") } else { (&mut self.pc_text, "Type or paste a message") };
-            let out = chat::show(ui, height, Chat { id: &c.id, jump_to_end, notes: &c.notes, text, hint, clipboard: c.phone, send_key: self.hub.settings().send_key, reply });
+            let out = chat::show(ui, height, Chat { id: &c.id, jump_to_end, notes: &c.notes, text, hint, clipboard: c.phone, send_key: self.hub.settings().send_key, reply, zoom: self.chat_zoom, widths: self.bubble_w });
+            self.chat_rect = Some(out.rect);
+            if let Some((own, w)) = out.width {
+                if own {
+                    self.bubble_w.own = Some(w);
+                } else {
+                    self.bubble_w.theirs = Some(w);
+                }
+                self.bubble_changed = Some(std::time::Instant::now());
+            }
             self.compose_action(out.compose, c);
             if let Some(a) = out.msg {
                 self.message_action(ui.ctx(), a, c);
@@ -101,7 +124,7 @@ impl App {
             // Transfers sit under the chat and push the notes further down; the chat keeps its size.
             let (phone, cid) = (c.phone, c.id.clone());
             let list = self.visible_transfers(|t| {
-                if phone { matches!(t.dir, Direction::ToPc | Direction::ToPhone) } else { matches!(t.dir, Direction::ToPeer | Direction::FromPeer) && t.device_id == cid }
+                if phone { matches!(t.dir, Direction::ToPc | Direction::ToPhone) && t.device_id == cid } else { matches!(t.dir, Direction::ToPeer | Direction::FromPeer) && t.device_id == cid }
             });
             match common::transfers(ui, &list) {
                 Some(TransferAction::Accept(id)) => self.hub.accept_file(&id),
@@ -198,7 +221,7 @@ impl App {
             self.jump_after = Some(c.notes.len());
         }
         match (action, c.phone) {
-            (Compose::SendText, true) => match self.hub.send_text_reply(&self.phone_text, self.reply_mid.as_deref()) {
+            (Compose::SendText, true) => match self.hub.send_text_reply(&c.id, &self.phone_text, self.reply_mid.as_deref()) {
                 Ok(()) => {
                     self.phone_text.clear();
                     self.reply_mid = None;
@@ -210,10 +233,10 @@ impl App {
                 self.hub.send_peer_text(&c.id, text, self.reply_mid.take(), || {});
             }
             (Compose::SendClipboard, true) => {
-                let hub = self.hub.clone();
-                std::thread::spawn(move || hub.send_clipboard());
+                let (hub, id) = (self.hub.clone(), c.id.clone());
+                std::thread::spawn(move || hub.send_clipboard_to(&id));
             }
-            (Compose::PickFiles, true) => self.hub.pick_and_send_files(),
+            (Compose::PickFiles, true) => self.hub.pick_and_send_files(&c.id, &c.name),
             (Compose::PickFiles, false) => self.hub.pick_and_send_peer_files(&c.id, &c.name),
             _ => {}
         }
@@ -227,11 +250,11 @@ impl App {
             ui.label(RichText::new("NOTES AND FILES").small().strong().color(palette(ui).label2));
             widgets::trailing(ui, |ui| {
                 ui.add_space(4.0);
-                if widgets::plain(ui, "Clear").on_hover_text("Clear the list on this PC. The other side keeps its copy.").clicked() {
+if widgets::plain(ui, "Clear list").on_hover_text("Empty this list on this PC. The chat above keeps its messages, and the other side keeps its copy.").clicked() {
                     if c.phone {
-                        self.hub.bridge.clear_history();
+                        self.hub.bridge.clear_list(&c.id);
                     } else {
-                        self.hub.bridge.clear_peer_notes(&c.id);
+                        self.hub.bridge.clear_peer_list(&c.id);
                     }
                 }
                 if widgets::plain(ui, "Open inbox").clicked() {
@@ -239,7 +262,7 @@ impl App {
                 }
             });
         });
-        match common::history(ui, &c.notes) {
+        match common::history(ui, &c.list) {
             Some(HistoryAction::Copy(t)) => ui.ctx().copy_text(t),
             Some(HistoryAction::Open(f)) => self.hub.open_file(&f),
             Some(HistoryAction::ShowFolder(f)) => self.hub.show_file(&f),
@@ -351,6 +374,43 @@ impl App {
             theme::set_accent(s.accent, s.custom_accent);
             theme::install(ui.ctx());
         }
+        ui.add_space(8.0);
+        widgets::grouped(ui, |g| {
+            g.row(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Chat size");
+                    widgets::trailing(ui, |ui| {
+                        if widgets::secondary(ui, "Reset").on_hover_text("Back to 100 %").clicked() {
+                            s.chat_zoom = 1.0;
+                            self.chat_zoom = 1.0;
+                            self.chat_zoom_saved = 1.0;
+                            self.chat_zoom_changed = None;
+                        }
+                        ui.label(format!("{} %", (self.chat_zoom * 100.0).round()));
+                    });
+                });
+            });
+        });
+        widgets::footnote(ui, "Hold Ctrl and turn the mouse wheel over the chat to change the size of the messages and the text box only. Anywhere else the wheel changes the size of the whole window.");
+        ui.add_space(8.0);
+        widgets::grouped(ui, |g| {
+            g.row(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Message width");
+                    widgets::trailing(ui, |ui| {
+                        if widgets::secondary(ui, "Reset").on_hover_text("Every message as wide as its text again").clicked() {
+                            self.bubble_w = chat::Widths::default();
+                            s.bubble_own = None;
+                            s.bubble_theirs = None;
+                            self.bubble_changed = None;
+                        }
+                        let show = |w: Option<f32>| w.map_or("automatic".to_string(), |w| format!("{} pt", w.round()));
+                        ui.label(format!("mine: {} \u{b7} theirs: {}", show(self.bubble_w.own), show(self.bubble_w.theirs)));
+                    });
+                });
+            });
+        });
+        widgets::footnote(ui, "Drag a message in the chat to the left or right to set the width of all your messages, or of all incoming ones. Reset makes every message as wide as its text again.");
 
         widgets::section(ui, "BEHAVIOR");
         let tray_ok = self.hub.tray_ok.load(Ordering::SeqCst);
@@ -368,6 +428,24 @@ impl App {
                         let mut ask = !b.auto_accept_files();
                         if widgets::switch(ui, &mut ask).changed() {
                             b.set_auto_accept_files(!ask);
+                        }
+                    });
+                });
+            });
+            g.row(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Stop a file request that is not accepted after");
+                    widgets::trailing(ui, |ui| {
+                        ui.label("seconds");
+                        let id = theme::id("offer_timeout_edit");
+                        if !ui.memory(|m| m.has_focus(id)) {
+                            self.offer_timeout_edit = b.offer_timeout_secs().to_string();
+                        }
+                        let e = ui.add(egui::TextEdit::singleline(&mut self.offer_timeout_edit).id(id).desired_width(56.0).align(egui::Align2::RIGHT_CENTER));
+                        self.offer_timeout_edit.retain(|c| c.is_ascii_digit());
+                        self.offer_timeout_edit.truncate(5);
+                        if e.lost_focus() {
+                            b.set_offer_timeout_secs(self.offer_timeout_edit.parse::<u32>().unwrap_or(0).min(86_400));
                         }
                     });
                 });
@@ -410,9 +488,15 @@ impl App {
             widgets::footnote(ui, "No tray icon is available on this desktop, so closing the window quits.");
         } else if cfg!(target_os = "linux") {
             widgets::footnote(ui, "Needs a system tray. GNOME shows none unless the AppIndicator extension is installed.");
+            if self.hub.x11_forced.load(Ordering::SeqCst) {
+                widgets::footnote(ui, "On Wayland, Bridge opens through XWayland while this is on, because Wayland has no way to hide a window.");
+            } else if s.keep_in_tray && !self.hub.window_can_hide.load(Ordering::SeqCst) {
+                widgets::footnote(ui, "This is a Wayland session, which cannot hide a window, so closing the window still quits. Restart Bridge and it opens through XWayland, where hiding works.");
+            }
         }
         widgets::footnote(ui, "The hotkey works while Bridge is in the background. Several keys at once are possible, for example Ctrl+Alt+B or C+P. Two ordinary keys (like C+P) are watched for instead of being reserved, so the keys also reach other programs; on a Mac that needs the Accessibility permission.");
         widgets::footnote(ui, "With Enter, Shift+Enter starts a new line. With the other choices, Enter starts a new line.");
+        widgets::footnote(ui, "A file you send to another PC is withdrawn when nobody accepts it within this many seconds. 0 means no limit: it waits until the other person answers (the other PC drops an unanswered request after 15 minutes anyway).");
         widgets::footnote(ui, "When asking is on, a phone or PC that wants to send a file waits until you accept it. Text from other PCs is never copied to the clipboard automatically.");
         if s != before {
             let hotkey_changed = s.hotkey != before.hotkey || s.hotkey_enabled != before.hotkey_enabled;

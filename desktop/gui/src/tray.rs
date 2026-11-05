@@ -1,6 +1,8 @@
 //! Tray icon with a small menu, and the global hotkey. Both keep working while the window is hidden.
 //!
-//! Linux: the tray library needs a GTK main loop, so it lives on its own thread.
+//! Linux: the icon speaks the StatusNotifierItem protocol directly (KDE, GNOME with the AppIndicator extension,
+//! XFCE, Cinnamon ...). Unlike an AppIndicator it reports a left click, so a click on the icon brings the window
+//! back and a right click opens the menu. It runs on its own thread and needs no GTK.
 //! Windows and macOS: the tray is created on the main thread, right after the window system starts.
 
 use std::sync::atomic::Ordering;
@@ -10,7 +12,9 @@ use global_hotkey::hotkey::HotKey;
 use std::sync::atomic::AtomicBool;
 use crate::shortcut::Plan;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+#[cfg(not(target_os = "linux"))]
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+#[cfg(not(target_os = "linux"))]
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::hub::Hub;
@@ -24,7 +28,10 @@ pub struct Keep {
     registered: Option<HotKey>,
     /// Set to stop the thread that watches the keyboard (shortcuts with two ordinary keys, or only modifiers).
     watcher: Option<Arc<AtomicBool>>,
+    #[cfg(not(target_os = "linux"))]
     _tray: Option<TrayIcon>,
+    #[cfg(target_os = "linux")]
+    _tray: Option<ksni::blocking::Handle<LinuxTray>>,
 }
 
 impl Keep {
@@ -107,15 +114,20 @@ fn watch_keyboard(hub: Arc<Hub>, groups: Vec<Vec<device_query::Keycode>>, text: 
 
 pub fn start(hub: &Arc<Hub>) -> Keep {
     let mut keep = Keep::default();
-    install_event_handlers(hub);
 
     #[cfg(target_os = "linux")]
     {
-        let ok = linux_tray_thread(hub.clone());
-        hub.tray_ok.store(ok, Ordering::SeqCst);
+        match linux_tray(hub.clone()) {
+            Ok(handle) => {
+                hub.tray_ok.store(true, Ordering::SeqCst);
+                keep._tray = Some(handle);
+            }
+            Err(e) => tracing::warn!("no tray icon: {e}"),
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
+        install_event_handlers(hub);
         match build_tray() {
             Ok(t) => {
                 hub.tray_ok.store(true, Ordering::SeqCst);
@@ -130,6 +142,7 @@ pub fn start(hub: &Arc<Hub>) -> Keep {
     keep
 }
 
+#[cfg(not(target_os = "linux"))]
 fn install_event_handlers(hub: &Arc<Hub>) {
     let h = hub.clone();
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| match e.id.0.as_str() {
@@ -149,6 +162,7 @@ fn install_event_handlers(hub: &Arc<Hub>) {
     }));
 }
 
+#[cfg(not(target_os = "linux"))]
 fn build_tray() -> Result<TrayIcon, String> {
     let menu = Menu::new();
     let items = [
@@ -171,28 +185,80 @@ fn build_tray() -> Result<TrayIcon, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The tray icon on Linux. Left click (the "activate" action) shows the window, the menu opens on right click.
 #[cfg(target_os = "linux")]
-fn linux_tray_thread(_hub: Arc<Hub>) -> bool {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        if let Err(e) = gtk::init() {
-            tracing::warn!("no tray icon (GTK): {e}");
-            let _ = tx.send(false);
-            return;
+pub struct LinuxTray {
+    hub: Arc<Hub>,
+}
+
+#[cfg(target_os = "linux")]
+impl ksni::Tray for LinuxTray {
+    // false: a click on the icon is reported to `activate` instead of opening the menu
+    const MENU_ON_ACTIVATE: bool = false;
+
+    fn id(&self) -> String {
+        "bridge-app".into()
+    }
+
+    fn title(&self) -> String {
+        "Bridge".into()
+    }
+
+    fn tool_tip(&self) -> ksni::ToolTip {
+        ksni::ToolTip { title: "Bridge".into(), ..Default::default() }
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        // the tray wants ARGB, the icon is RGBA
+        let mut data = icon::rgba(64);
+        for px in data.chunks_exact_mut(4) {
+            px.rotate_right(1);
         }
-        match build_tray() {
-            Ok(tray) => {
-                let _ = tx.send(true);
-                gtk::main(); // runs for the life of the program
-                drop(tray);
+        vec![ksni::Icon { width: 64, height: 64, data }]
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        self.hub.show_window();
+    }
+
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        self.hub.show_window();
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::StandardItem;
+        vec![
+            StandardItem { label: "Open Bridge".into(), activate: Box::new(|t: &mut Self| t.hub.show_window()), ..Default::default() }.into(),
+            StandardItem {
+                label: "Send clipboard to phone".into(),
+                activate: Box::new(|t: &mut Self| {
+                    let h = t.hub.clone();
+                    std::thread::spawn(move || h.send_clipboard());
+                }),
+                ..Default::default()
             }
-            Err(e) => {
-                tracing::warn!("no tray icon: {e}");
-                let _ = tx.send(false);
-            }
-        }
-    });
-    rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or(false)
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem { label: "Quit".into(), activate: Box::new(|t: &mut Self| t.hub.quit()), ..Default::default() }.into(),
+        ]
+    }
+
+    // When the panel that shows the icon goes away (it restarts, or the user removes the applet) the window
+    // must not be hidden any more, or nobody could bring it back.
+    fn watcher_offline(&self, _reason: ksni::OfflineReason) -> bool {
+        self.hub.tray_ok.store(false, Ordering::SeqCst);
+        true
+    }
+
+    fn watcher_online(&self) {
+        self.hub.tray_ok.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_tray(hub: Arc<Hub>) -> Result<ksni::blocking::Handle<LinuxTray>, String> {
+    use ksni::blocking::TrayMethods;
+    LinuxTray { hub }.spawn().map_err(|e| e.to_string())
 }
 
 fn create_hotkey_manager(hub: &Arc<Hub>) -> Option<GlobalHotKeyManager> {

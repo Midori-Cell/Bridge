@@ -115,6 +115,10 @@ pub struct Note {
     pub ts: f64,
     /// "pc" or the name of the phone that sent it.
     pub src: String,
+    /// The phone whose conversation this message belongs to (a PC-to-PC message has none). Every phone
+    /// has its own conversation with this PC; a phone never sees the messages of another phone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dev: String,
     pub kind: NoteKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -122,12 +126,48 @@ pub struct Note {
     pub file: Option<FileRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<Reply>,
+    /// Cleared from the chat on this PC. The note stays in the list "Notes and files" (and on the phone).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub chat_hidden: bool,
+    /// Cleared from the list "Notes and files" on this PC. The note stays in the chat (and on the phone).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub list_hidden: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Which view of a conversation "Clear" empties. The two views are independent: a message that is cleared
+/// from one stays in the other, and is deleted from this PC only when it has been cleared from both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clear {
+    Chat,
+    List,
+    Both,
+}
+
+impl Clear {
+    /// Mark every note picked by `mine` as cleared from the chosen view(s), take out the ones that are
+    /// now cleared from both, and return those.
+    pub(crate) fn apply(self, notes: &mut Vec<Note>, mine: impl Fn(&Note) -> bool) -> Vec<Note> {
+        for n in notes.iter_mut().filter(|n| mine(n)) {
+            n.chat_hidden |= self != Clear::List;
+            n.list_hidden |= self != Clear::Chat;
+        }
+        let (gone, keep): (Vec<Note>, Vec<Note>) = std::mem::take(notes).into_iter().partition(|n| n.chat_hidden && n.list_hidden);
+        *notes = keep;
+        gone
+    }
 }
 
 impl Note {
     /// The note as a phone may see it: without paths from this PC.
     pub fn for_phone(&self) -> Note {
         let mut n = self.clone();
+        n.dev.clear();
+        n.chat_hidden = false;
+        n.list_hidden = false;
         if let Some(f) = n.file.as_mut() {
             f.local_path = None;
         }
@@ -156,6 +196,9 @@ pub(crate) struct DeviceRec {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct OfferRec {
     pub id: String,
+    /// The phone this file was offered to; no other phone may fetch it.
+    #[serde(default)]
+    pub dev: String,
     pub name: String,
     pub size: u64,
     pub sha256: String,
@@ -190,6 +233,10 @@ pub(crate) struct Persist {
     /// Receive files without asking. Off by default: the user accepts each incoming file.
     #[serde(default)]
     pub auto_accept_files: bool,
+    /// A file this PC offers to another PC is withdrawn when nobody accepts it within this many seconds.
+    /// 0: keep waiting (the other PC drops an unanswered offer after 15 minutes anyway).
+    #[serde(default)]
+    pub offer_timeout_secs: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

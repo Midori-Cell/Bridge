@@ -21,6 +21,12 @@ pub struct Settings {
     pub copy_incoming_text: bool,
     /// Interface scale (ctrl + mouse wheel, ctrl + plus / minus).
     pub zoom: f32,
+    /// Size of the chat alone (ctrl + mouse wheel over the chat); `zoom` scales the whole window.
+    pub chat_zoom: f32,
+    /// Width of all my messages / of all incoming messages in the chat, set by dragging one of them sideways
+    /// (points at normal size). `None`: as wide as the text.
+    pub bubble_own: Option<f32>,
+    pub bubble_theirs: Option<f32>,
     /// Which key sends the message in the text box.
     pub send_key: SendKey,
     /// Height of the chat in points, set by dragging its lower edge. `None`: follows the window.
@@ -85,7 +91,7 @@ impl Default for Settings {
     fn default() -> Self {
         // A tray icon is dependable on Windows and macOS. On Linux it depends on the desktop
         // (GNOME shows none without an extension), so closing quits there until the user opts in.
-        Self { keep_in_tray: !cfg!(target_os = "linux"), copy_incoming_text: false, zoom: 1.0, send_key: SendKey::default(), chat_height: None, inbox_dir: None, hotkey_enabled: true, hotkey: Default::default(), inbox_confirmed: false, custom_accent: [0x2E, 0xA0, 0x6B], accent: crate::theme::Accent::default() }
+        Self { keep_in_tray: !cfg!(target_os = "linux"), copy_incoming_text: false, zoom: 1.0, chat_zoom: 1.0, bubble_own: None, bubble_theirs: None, send_key: SendKey::default(), chat_height: None, inbox_dir: None, hotkey_enabled: true, hotkey: Default::default(), inbox_confirmed: false, custom_accent: [0x2E, 0xA0, 0x6B], accent: crate::theme::Accent::default() }
     }
 }
 
@@ -109,6 +115,16 @@ pub struct Hub {
     /// The hotkey was registered; otherwise `hotkey_note` says why not.
     pub hotkey_note: Mutex<String>,
     pub quitting: AtomicBool,
+    /// The phone whose chat is open in the window, if any (the tray and the hotkey send the clipboard to it).
+    pub open_phone: Mutex<Option<String>>,
+    /// This window system can hide a window. False on a native Wayland session, where the program
+    /// cannot take its window away, so closing has to quit instead.
+    pub window_can_hide: AtomicBool,
+    /// On a Wayland session the window was started through XWayland, because that can hide it.
+    pub x11_forced: AtomicBool,
+    /// The close button hid the window (to the tray). A close request that arrives now cannot come
+    /// from a click, but from the system (logging out, shutting down), and must not be refused.
+    pub hidden: AtomicBool,
     /// Result of the last "start pairing with another PC" request, picked up by the window.
     pair_result: Mutex<Option<Result<OutgoingPair, String>>>,
     folder_pick: Mutex<Option<PathBuf>>,
@@ -135,6 +151,10 @@ impl Hub {
             tray_ok: AtomicBool::new(false),
             hotkey_note: Mutex::new(String::new()),
             quitting: AtomicBool::new(false),
+            open_phone: Mutex::new(None),
+            window_can_hide: AtomicBool::new(true),
+            x11_forced: AtomicBool::new(false),
+            hidden: AtomicBool::new(false),
             pair_result: Mutex::new(None),
             folder_pick: Mutex::new(None),
             hotkey_id: std::sync::atomic::AtomicU32::new(0),
@@ -203,33 +223,44 @@ impl Hub {
 
     // ------------------------------------------------------------ sending
 
-    pub fn send_text(&self, text: &str) -> Result<(), String> {
-        self.send_text_reply(text, None)
-    }
-
-    /// `reply_to`: the id of the message this one answers.
-    pub fn send_text_reply(&self, text: &str, reply_to: Option<&str>) -> Result<(), String> {
-        self.bridge.send_text_reply(text, reply_to).map(|_| ()).map_err(|e| match e {
+    /// `reply_to`: the id of the message this one answers. The note goes to that one phone only.
+    pub fn send_text_reply(&self, phone: &str, text: &str, reply_to: Option<&str>) -> Result<(), String> {
+        self.bridge.send_text_reply(phone, text, reply_to).map(|_| ()).map_err(|e| match e {
             NoteError::Empty => "Nothing to send.".to_string(),
             NoteError::TooLong => "That text is too long.".to_string(),
         })
     }
 
-    /// Send whatever text is on the clipboard to the phone. Used by the button, the tray and the hotkey.
-    pub fn send_clipboard(&self) {
-        match self.read_clipboard_text().and_then(|t| self.send_text(&t).map(|_| t)) {
-            Ok(t) => self.toast(format!("Clipboard sent ({} characters)", t.chars().count()), false),
+    /// Send whatever text is on the clipboard to one phone (the button in its chat).
+    pub fn send_clipboard_to(&self, phone: &str) {
+        let name = self.bridge.devices().into_iter().find(|d| d.id == phone).map(|d| d.name).unwrap_or_else(|| "the phone".into());
+        match self.read_clipboard_text().and_then(|t| self.send_text_reply(phone, &t, None).map(|_| t)) {
+            Ok(t) => self.toast(format!("Clipboard sent to {name} ({} characters)", t.chars().count()), false),
             Err(e) => self.toast(e, true),
         }
     }
 
-    /// Offer files to the phone. Hashing big files takes a moment, so this runs in the background.
-    pub fn send_files(self: &Arc<Self>, paths: Vec<PathBuf>) {
+    /// The tray menu and the hotkey: send the clipboard to the phone whose chat is open, otherwise to the
+    /// phone that was in touch most recently. Always one phone, and the message says which.
+    pub fn send_clipboard(&self) {
+        let phones = self.bridge.devices();
+        let open = lock(&self.open_phone).clone();
+        let chosen = open
+            .and_then(|id| phones.iter().find(|d| d.id == id))
+            .or_else(|| phones.iter().max_by(|a, b| a.last_seen.unwrap_or(0.0).total_cmp(&b.last_seen.unwrap_or(0.0))));
+        match chosen {
+            Some(d) => self.send_clipboard_to(&d.id.clone()),
+            None => self.toast("No phone is paired yet.", true),
+        }
+    }
+
+    /// Offer files to one phone. Hashing big files takes a moment, so this runs in the background.
+    pub fn send_files(self: &Arc<Self>, phone: &str, paths: Vec<PathBuf>) {
         for path in paths {
-            let me = self.clone();
+            let (me, phone) = (self.clone(), phone.to_string());
             self.rt.spawn(async move {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                match me.bridge.send_file(&path).await {
+                match me.bridge.send_file(&phone, &path).await {
                     Ok(f) => me.toast(format!("{} is ready on the phone", f.name), false),
                     Err(e) => me.toast(format!("Could not send {name}: {e}"), true),
                 }
@@ -259,11 +290,11 @@ impl Hub {
     }
 
     /// Show a file picker without blocking the window.
-    pub fn pick_and_send_files(self: &Arc<Self>) {
-        let me = self.clone();
+    pub fn pick_and_send_files(self: &Arc<Self>, phone: &str, phone_name: &str) {
+        let (me, phone, title) = (self.clone(), phone.to_string(), format!("Send files to {phone_name}"));
         std::thread::spawn(move || {
-            if let Some(paths) = rfd::FileDialog::new().set_title("Send files to the phone").pick_files() {
-                me.send_files(paths);
+            if let Some(paths) = rfd::FileDialog::new().set_title(title).pick_files() {
+                me.send_files(&phone, paths);
             }
         });
     }
@@ -359,7 +390,7 @@ impl Hub {
     /// Delete a message for both sides. A received file is deleted from the inbox too.
     pub fn delete_message(self: &Arc<Self>, phone: bool, conv_id: &str, mid: &str) {
         if phone {
-            self.bridge.delete_note(mid);
+            self.bridge.delete_note(conv_id, mid);
             return;
         }
         let (me, peer, mid) = (self.clone(), conv_id.to_string(), mid.to_string());
@@ -430,6 +461,7 @@ impl Hub {
     // ------------------------------------------------------------ window control
 
     pub fn show_window(&self) {
+        self.hidden.store(false, Ordering::SeqCst);
         if let Some(c) = self.ctx.get() {
             c.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             c.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -437,11 +469,26 @@ impl Hub {
         }
     }
 
+    /// Ask the window to close, as the close button does. Debug builds use it to test that path.
+    #[cfg(debug_assertions)]
+    pub fn request_close(&self) {
+        if let Some(c) = self.ctx.get() {
+            c.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     /// Really quit (as opposed to the close button, which may only hide the window).
     pub fn quit(&self) {
-        self.quitting.store(true, Ordering::SeqCst);
         if let Some(c) = self.ctx.get() {
             c.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        }
+        self.quit_quietly();
+    }
+
+    /// Quit without bringing a hidden window back first (the system asks the program to end).
+    pub fn quit_quietly(&self) {
+        self.quitting.store(true, Ordering::SeqCst);
+        if let Some(c) = self.ctx.get() {
             c.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // If the window loop is asleep and never sees the request, do not hang around.

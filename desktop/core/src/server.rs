@@ -226,8 +226,8 @@ async fn notes_get(
         if !s.device_exists(&dev.id) {
             return Err(ApiError::unauthorized()); // unpaired while waiting
         }
-        let notes: Vec<Note> = s.notes_since(since, 100).iter().map(Note::for_phone).collect();
-        let (deleted, del) = s.deleted_since(del_seen.unwrap_or(u64::MAX));
+        let notes: Vec<Note> = s.notes_since(&dev.id, since, 100).iter().map(Note::for_phone).collect();
+        let (deleted, del) = s.deleted_since(&dev.id, del_seen.unwrap_or(u64::MAX));
         let remaining = deadline.saturating_duration_since(Instant::now());
         if since.is_none() || !notes.is_empty() || !deleted.is_empty() || remaining.is_zero() {
             let last = notes.last().map(|n| n.id).unwrap_or(since.unwrap_or(0));
@@ -244,7 +244,7 @@ async fn notes_get(
 async fn notes_post(State(s): State<Arc<Shared>>, Auth(dev): Auth, JsonBody(b): JsonBody) -> Result<Json<Value>, ApiError> {
     let text = b.get("text").and_then(Value::as_str).ok_or_else(|| ApiError::bad_request("empty_text"))?;
     let reply_to = b.get("reply_to").and_then(Value::as_str);
-    match s.add_text_note(&dev.name, text, reply_to) {
+    match s.add_text_note(&dev.id, &dev.name, text, reply_to) {
         Ok(note) => Ok(Json(json!({ "note": note.for_phone() }))),
         Err(NoteError::Empty) => Err(ApiError::bad_request("empty_text")),
         Err(NoteError::TooLong) => Err(ApiError::bad_request("text_too_long")),
@@ -252,8 +252,8 @@ async fn notes_post(State(s): State<Arc<Shared>>, Auth(dev): Auth, JsonBody(b): 
 }
 
 /// The phone deletes one of its messages: it goes from the PC's view too.
-async fn notes_delete(State(s): State<Arc<Shared>>, Auth(_dev): Auth, Path(mid): Path<String>) -> Result<Json<Value>, ApiError> {
-    if s.delete_note(&mid) { Ok(Json(json!({ "deleted": true }))) } else { Err(ApiError::not_found()) }
+async fn notes_delete(State(s): State<Arc<Shared>>, Auth(dev): Auth, Path(mid): Path<String>) -> Result<Json<Value>, ApiError> {
+    if s.delete_note(&dev.id, &mid) { Ok(Json(json!({ "deleted": true }))) } else { Err(ApiError::not_found()) }
 }
 
 // ------------------------------------------------------------------ files: phone -> PC
@@ -299,7 +299,7 @@ async fn files_get(State(s): State<Arc<Shared>>, Auth(dev): Auth, Path(id): Path
     if let Some(v) = s.incoming_status(&dev.id, &id) {
         return Ok(Json(v));
     }
-    let rec = s.offer(&id).ok_or_else(ApiError::not_found)?;
+    let rec = s.offer_for(&dev.id, &id).ok_or_else(ApiError::not_found)?;
     Ok(Json(json!({ "id": rec.id, "name": rec.name, "size": rec.size, "sha256": rec.sha256, "dir": "to_phone", "state": "ready" })))
 }
 
@@ -311,7 +311,7 @@ async fn files_delete(State(s): State<Arc<Shared>>, Auth(dev): Auth, Path(id): P
 // ------------------------------------------------------------------ files: PC -> phone
 
 async fn files_ticket(State(s): State<Arc<Shared>>, Auth(dev): Auth, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    s.offer(&id).ok_or_else(ApiError::not_found)?;
+    s.offer_for(&dev.id, &id).ok_or_else(ApiError::not_found)?;
     let ticket = s.new_ticket(&dev.id, &id);
     Ok(Json(json!({ "ticket": ticket, "url": format!("/dl/{ticket}/{id}"), "expires_in": 300 })))
 }
@@ -342,7 +342,7 @@ fn content_disposition(name: &str) -> String {
 }
 
 async fn serve_offer(s: &Arc<Shared>, dev: &Device, id: &str, headers: &HeaderMap) -> Result<Response, ApiError> {
-    let (rec, file) = s.open_offer(id).await?;
+    let (rec, file) = s.open_offer(&dev.id, id).await?;
     let size = rec.size;
     let etag = format!("\"{}\"", rec.sha256);
 

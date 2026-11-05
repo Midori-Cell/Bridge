@@ -13,6 +13,7 @@ mod icon;
 mod icons;
 mod minimize;
 mod pages;
+mod session;
 mod shortcut;
 mod single;
 mod theme;
@@ -72,6 +73,7 @@ fn main() {
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
     // On the very first start the window asks where received files should go (there is no installer).
     let saved = hub::Settings::load(&data_dir);
+    let session = session::Session::detect(saved.keep_in_tray);
     let ask_folder = args.inbox.is_none() && !saved.inbox_confirmed;
     let inbox = args.inbox.or(saved.inbox_dir).unwrap_or_else(default_inbox_dir);
     let mut cfg = Config::new(data_dir, inbox);
@@ -88,7 +90,10 @@ fn main() {
     };
 
     let hub = hub::Hub::new(bridge, rt.handle().clone());
+    hub.window_can_hide.store(session.can_hide, std::sync::atomic::Ordering::SeqCst);
+    hub.x11_forced.store(session.force_x11, std::sync::atomic::Ordering::SeqCst);
     hub.spawn_event_task();
+    rt.spawn(session::quit_on_signals(hub.clone()));
     if let Some(listener) = single {
         single::serve(listener, hub.clone());
     }
@@ -101,6 +106,7 @@ fn main() {
             .with_inner_size([1040.0, 760.0])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(icon),
+        event_loop_builder: session.event_loop_hook(),
         ..Default::default()
     };
 
@@ -121,6 +127,14 @@ fn main() {
                 match what.as_str() {
                     "show" => h.show_window(),
                     "quit" => h.quit(),
+                    // like a click on the close button (or the system asking the window to close)
+                    "close" => h.request_close(),
+                    // write a fresh phone pairing code to the file named by BRIDGE_DEBUG_FILE
+                    "paircode" => {
+                        if let Ok(file) = std::env::var("BRIDGE_DEBUG_FILE") {
+                            let _ = std::fs::write(file, h.bridge.new_pairing().code);
+                        }
+                    }
                     "clip" => h.send_clipboard(),
                     // send the file named by BRIDGE_DEBUG_FILE to the first paired PC
                     "peerfile" => {
@@ -157,7 +171,12 @@ fn main() {
                 cc.egui_ctx.set_theme(egui::ThemePreference::Light); // for screenshots; normally follows the system
             }
             let keep = tray::start(&hub2);
+            #[cfg(debug_assertions)]
+            if std::env::var("BRIDGE_DEBUG_TRAY").is_ok() {
+                hub2.tray_ok.store(true, std::sync::atomic::Ordering::SeqCst); // test hiding on a machine without a tray
+            }
             if start_hidden && hub2.tray_ok.load(std::sync::atomic::Ordering::SeqCst) {
+                hub2.hidden.store(true, std::sync::atomic::Ordering::SeqCst);
                 cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
             Ok(Box::new(app::App::new(hub2, keep, ask_folder)))

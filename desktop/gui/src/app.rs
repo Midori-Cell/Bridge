@@ -24,6 +24,8 @@ pub const MAX_NOTES_SHOWN: usize = 100;
 const SIDEBAR_WIDTH: f32 = 208.0;
 pub const MIN_ZOOM: f32 = 0.6;
 pub const MAX_ZOOM: f32 = 2.0;
+pub const MIN_CHAT_ZOOM: f32 = 0.7;
+pub const MAX_CHAT_ZOOM: f32 = 2.2;
 
 /// What the main area shows. `Auto` means "nothing chosen yet": the first phone or PC is picked,
 /// or the welcome page is shown when nothing is paired.
@@ -64,7 +66,8 @@ pub enum Sheet {
 pub struct Data {
     pub phones: Vec<Device>,
     pub peers: Vec<Peer>,
-    pub phone_notes: Vec<Note>,
+    /// The conversation of each phone, by phone id. A phone's chat shows only its own messages.
+    pub phone_notes: HashMap<String, Vec<Note>>,
     pub peer_notes: HashMap<String, Vec<Note>>,
     pub now: f64,
 }
@@ -74,7 +77,16 @@ pub struct Conv {
     pub phone: bool,
     pub id: String,
     pub name: String,
+    /// What the chat shows (messages not cleared from the chat).
     pub notes: Vec<Note>,
+    /// What the list "Notes and files" shows (entries not cleared from the list).
+    pub list: Vec<Note>,
+}
+
+/// The messages of a conversation as the chat shows them, and as the list "Notes and files" shows them.
+fn split_views(all: Option<&Vec<Note>>) -> (Vec<Note>, Vec<Note>) {
+    let all = all.map(Vec::as_slice).unwrap_or_default();
+    (all.iter().filter(|n| !n.chat_hidden).cloned().collect(), all.iter().filter(|n| !n.list_hidden).cloned().collect())
 }
 
 pub struct App {
@@ -97,6 +109,16 @@ pub struct App {
     zoom_seen: f32,
     zoom_changed: Option<Instant>,
     zoom_saved: f32,
+    /// Size of the chat alone, saved like `zoom`; `chat_rect` is where the chat was drawn last frame.
+    pub(crate) chat_zoom: f32,
+    pub(crate) chat_zoom_changed: Option<Instant>,
+    pub(crate) chat_zoom_saved: f32,
+    /// Widths the user dragged the messages to, and when they last changed (saved shortly after the user stops).
+    pub(crate) bubble_w: crate::chat::Widths,
+    pub(crate) bubble_changed: Option<Instant>,
+    /// The seconds typed into the "stop a file request" field in Settings.
+    pub(crate) offer_timeout_edit: String,
+    pub(crate) chat_rect: Option<egui::Rect>,
     /// When each transfer entered its current state, to hide old finished ones.
     seen: HashMap<String, (TransferState, Instant)>,
 }
@@ -106,6 +128,8 @@ impl App {
         let pc_name_edit = hub.bridge.pc_name();
         let zoom = hub.settings().zoom;
         let chat_h = hub.settings().chat_height;
+        let chat_zoom = hub.settings().chat_zoom;
+        let (bubble_own, bubble_theirs) = (hub.settings().bubble_own, hub.settings().bubble_theirs);
         let sheet = ask_folder.then(|| Sheet::ChooseFolder { path: hub.bridge.inbox_dir(), first_run: true });
         App {
             hub,
@@ -123,6 +147,13 @@ impl App {
             zoom_seen: zoom,
             zoom_changed: None,
             zoom_saved: zoom,
+            chat_zoom: chat_zoom.clamp(MIN_CHAT_ZOOM, MAX_CHAT_ZOOM),
+            chat_zoom_changed: None,
+            chat_zoom_saved: chat_zoom,
+            bubble_w: crate::chat::Widths { own: bubble_own, theirs: bubble_theirs },
+            bubble_changed: None,
+            offer_timeout_edit: String::new(),
+            chat_rect: None,
             seen: HashMap::new(),
         }
     }
@@ -169,7 +200,8 @@ impl App {
         let mut peers = b.peers();
         peers.sort_by(|a, c| a.created.total_cmp(&c.created).then_with(|| a.name.cmp(&c.name)));
         let peer_notes = peers.iter().map(|p| (p.id.clone(), b.peer_notes(&p.id, MAX_NOTES_SHOWN))).collect();
-        Data { phones, peers, phone_notes: b.notes(MAX_NOTES_SHOWN), peer_notes, now: common::now_secs() }
+        let phone_notes = phones.iter().map(|p| (p.id.clone(), b.notes(&p.id, MAX_NOTES_SHOWN))).collect();
+        Data { phones, peers, phone_notes, peer_notes, now: common::now_secs() }
     }
 
     /// Keep the selection valid: a phone or PC that was unpaired disappears, nothing chosen picks the first one.
@@ -194,13 +226,13 @@ impl App {
         match &self.sel {
             Sel::Phone(id) => {
                 let ph = d.phones.iter().find(|p| &p.id == id)?;
-                // Notes sent from this PC go to every phone, so they belong to each phone's chat.
-                let notes = d.phone_notes.iter().filter(|n| n.src == "pc" || n.src == ph.name).cloned().collect();
-                Some(Conv { phone: true, id: ph.id.clone(), name: ph.name.clone(), notes })
+                let (notes, list) = split_views(d.phone_notes.get(&ph.id));
+                Some(Conv { phone: true, id: ph.id.clone(), name: ph.name.clone(), notes, list })
             }
             Sel::Pc(id) => {
                 let pc = d.peers.iter().find(|p| &p.id == id)?;
-                Some(Conv { phone: false, id: pc.id.clone(), name: pc.name.clone(), notes: d.peer_notes.get(id).cloned().unwrap_or_default() })
+                let (notes, list) = split_views(d.peer_notes.get(id));
+                Some(Conv { phone: false, id: pc.id.clone(), name: pc.name.clone(), notes, list })
             }
             _ => None,
         }
@@ -230,11 +262,19 @@ impl eframe::App for App {
         }
         // The close button only hides the window when a tray icon can bring it back.
         if ctx.input(|i| i.viewport().close_requested()) {
+            // A hidden window cannot be clicked, so a close request for it comes from the system
+            // (logout, shutdown). Refusing it would keep the desktop from shutting down.
+            let asked_by_system = !cfg!(target_os = "macos") && self.hub.hidden.load(Ordering::SeqCst);
             let hide = !self.hub.quitting.load(Ordering::SeqCst)
+                && !asked_by_system
                 && self.hub.tray_ok.load(Ordering::SeqCst)
+                && self.hub.window_can_hide.load(Ordering::SeqCst)
                 && self.hub.settings().keep_in_tray;
             if hide {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if !cfg!(target_os = "macos") {
+                    self.hub.hidden.store(true, Ordering::SeqCst);
+                }
                 if cfg!(target_os = "macos") {
                     // A hidden window cannot be brought back by a click on the Dock icon (the system's
                     // "reopen" request never reaches the program), so it goes to the Dock like the yellow
@@ -253,6 +293,7 @@ impl eframe::App for App {
 
         let data = self.snapshot();
         self.resolve_selection(&data);
+        *self.hub.open_phone.lock().unwrap_or_else(|e| e.into_inner()) = if let Sel::Phone(id) = &self.sel { Some(id.clone()) } else { None };
         self.handle_drops(&ctx);
         self.handle_pasted_images(&ctx);
         self.handle_mac_window_keys(&ctx);
@@ -351,7 +392,7 @@ impl App {
             side_section(ui, "PHONE", 0);
             let mut shown = 0;
             for ph in &d.phones {
-                let notes: Vec<&Note> = d.phone_notes.iter().filter(|n| n.src == "pc" || n.src == ph.name).collect();
+                let notes: Vec<&Note> = d.phone_notes.get(&ph.id).map(|v| v.iter().filter(|n| !n.chat_hidden).collect()).unwrap_or_default();
                 let (time, mut preview) = preview_of(&notes, d.now, ph.last_seen);
                 let wants = offers.contains(&ph.id);
                 if wants {
@@ -378,7 +419,7 @@ impl App {
             side_section(ui, "OTHER PCS", requests.len());
             let mut shown = 0;
             for pc in &d.peers {
-                let notes: Vec<&Note> = d.peer_notes.get(&pc.id).map(|v| v.iter().collect()).unwrap_or_default();
+                let notes: Vec<&Note> = d.peer_notes.get(&pc.id).map(|v| v.iter().filter(|n| !n.chat_hidden).collect()).unwrap_or_default();
                 let (time, mut preview) = preview_of(&notes, d.now, None);
                 let wants = offers.contains(&pc.id);
                 if wants {
@@ -424,7 +465,35 @@ impl App {
         // One wheel notch is a big step in egui; soften it to roughly 10 %.
         let delta = ctx.input(|i| i.zoom_delta()).powf(0.25);
         if (delta - 1.0).abs() > 1e-4 {
-            ctx.set_zoom_factor((ctx.zoom_factor() * delta).clamp(MIN_ZOOM, MAX_ZOOM));
+            // With the pointer on the chat, only the chat changes size; anywhere else the whole window does.
+            let on_chat = self.chat_rect.zip(ctx.input(|i| i.pointer.hover_pos())).is_some_and(|(r, p)| r.contains(p));
+            if on_chat {
+                self.chat_zoom = (self.chat_zoom * delta).clamp(MIN_CHAT_ZOOM, MAX_CHAT_ZOOM);
+                self.chat_zoom_changed = Some(Instant::now());
+            } else {
+                ctx.set_zoom_factor((ctx.zoom_factor() * delta).clamp(MIN_ZOOM, MAX_ZOOM));
+            }
+        }
+        self.chat_rect = None; // set again by the chat while it is on the page
+        if self.chat_zoom_changed.is_some_and(|t| t.elapsed() > Duration::from_millis(600)) && (self.chat_zoom - self.chat_zoom_saved).abs() > 1e-4 {
+            let z = self.chat_zoom;
+            self.hub.change_settings(|s| s.chat_zoom = z);
+            self.chat_zoom_saved = z;
+            self.chat_zoom_changed = None;
+        }
+        if self.chat_zoom_changed.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(700));
+        }
+        if self.bubble_changed.is_some_and(|t| t.elapsed() > Duration::from_millis(500)) {
+            let w = self.bubble_w;
+            self.hub.change_settings(|s| {
+                s.bubble_own = w.own;
+                s.bubble_theirs = w.theirs;
+            });
+            self.bubble_changed = None;
+        }
+        if self.bubble_changed.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(600));
         }
         let z = ctx.zoom_factor();
         if (z - self.zoom_seen).abs() > 1e-4 {
@@ -448,7 +517,7 @@ impl App {
         }
         match self.sel.clone() {
             Sel::Pc(id) => self.hub.send_peer_files(&id, dropped),
-            Sel::Phone(_) => self.hub.send_files(dropped),
+            Sel::Phone(id) => self.hub.send_files(&id, dropped),
             _ => self.hub.toast("Open the phone or a PC first, then drop the files.", true),
         }
     }
@@ -471,7 +540,8 @@ impl App {
             match self.hub.save_pasted_image(&img) {
                 Ok(path) => match target {
                     Sel::Pc(id) => self.hub.send_peer_files(&id, vec![path]),
-                    _ => self.hub.send_files(vec![path]),
+                    Sel::Phone(id) => self.hub.send_files(&id, vec![path]),
+                    _ => {}
                 },
                 Err(e) => self.hub.toast(format!("Could not use the pasted picture: {e}"), true),
             }

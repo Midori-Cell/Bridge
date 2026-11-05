@@ -326,14 +326,14 @@ async fn text_both_directions_exact() {
         let (st, _) = h.post_json("/api/notes", Some(&ph), json!({ "text": s })).await;
         assert_eq!(st, StatusCode::OK);
     }
-    h.b().send_text("hello phone").unwrap();
+    h.b().send_text(&ph.id, "hello phone").unwrap();
     let notes = h.notes(&ph).await;
     let texts: Vec<&str> = notes.iter().map(|n| n["text"].as_str().unwrap()).collect();
     assert_eq!(texts, [samples[0], samples[1], samples[2], samples[3], "hello phone"]);
     assert_eq!(notes[0]["src"], "Pixel");
     assert_eq!(notes[4]["src"], "pc");
     assert_eq!(notes[0]["kind"], "text");
-    let on_pc: Vec<String> = h.b().notes(10).into_iter().map(|n| n.text.unwrap()).collect();
+    let on_pc: Vec<String> = h.b().notes(&ph.id, 10).into_iter().map(|n| n.text.unwrap()).collect();
     assert_eq!(on_pc.len(), 5);
 }
 
@@ -344,9 +344,10 @@ async fn long_poll_wakes_immediately_on_new_note() {
     let (_, base) = h.get("/api/notes?wait=0", &ph).await;
     let since = base["last_id"].as_u64().unwrap();
     let b = h.b().clone();
+    let pid = ph.id.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(300)).await;
-        b.send_text("ping").unwrap();
+        b.send_text(&pid, "ping").unwrap();
     });
     let t0 = Instant::now();
     let (st, v) = h.get(&format!("/api/notes?since={since}&wait=20"), &ph).await;
@@ -379,7 +380,7 @@ async fn many_pollers_all_wake() {
         tasks.push(tokio::spawn(async move { h.get("/api/notes?since=0&wait=20", &ph).await }));
     }
     tokio::time::sleep(Duration::from_millis(400)).await;
-    h.b().send_text("fanout").unwrap();
+    h.b().send_text(&ph.id, "fanout").unwrap();
     for t in tasks {
         let (st, v) = t.await.unwrap();
         assert_eq!((st, v["notes"][0]["text"].as_str()), (StatusCode::OK, Some("fanout")));
@@ -424,10 +425,11 @@ async fn note_validation() {
 #[tokio::test]
 async fn history_is_capped() {
     let h = H::new().await;
+    let ph = h.pair().await;
     for i in 0..520 {
-        h.b().send_text(&format!("n{i}")).unwrap();
+        h.b().send_text(&ph.id, &format!("n{i}")).unwrap();
     }
-    let notes = h.b().notes(10_000);
+    let notes = h.b().notes(&ph.id, 10_000);
     assert_eq!(notes.len(), 500);
     assert_eq!(notes.last().unwrap().text.as_deref(), Some("n519"));
 }
@@ -436,10 +438,10 @@ async fn history_is_capped() {
 async fn clear_history() {
     let h = H::new().await;
     let ph = h.pair().await;
-    h.b().send_text("a").unwrap();
-    h.b().clear_history();
+    h.b().send_text(&ph.id, "a").unwrap();
+    h.b().clear_history(&ph.id);
     assert!(h.notes(&ph).await.is_empty());
-    h.b().send_text("b").unwrap();
+    h.b().send_text(&ph.id, "b").unwrap();
     assert_eq!(h.notes(&ph).await.len(), 1);
 }
 
@@ -767,7 +769,7 @@ async fn stale_partial_files_without_a_valid_owner_are_cleaned_on_start() {
 async fn offered(h: &H, ph: &Phone, data: &[u8], name: &str) -> (String, PathBuf) {
     let path = h.tmp.path().join(name);
     std::fs::write(&path, data).unwrap();
-    let fref = h.b().send_file(&path).await.unwrap();
+    let fref = h.b().send_file(&ph.id, &path).await.unwrap();
     assert_eq!(fref.sha256, sha(data));
     assert_eq!(fref.size as usize, data.len());
     let notes = h.notes(ph).await;
@@ -963,8 +965,9 @@ async fn offers_survive_restart() {
 #[tokio::test]
 async fn offering_a_directory_or_missing_path_fails_cleanly() {
     let h = H::new().await;
-    assert!(h.b().send_file(h.tmp.path()).await.is_err());
-    assert!(h.b().send_file(h.tmp.path().join("nope.bin")).await.is_err());
+    let ph = h.pair().await;
+    assert!(h.b().send_file(&ph.id, h.tmp.path()).await.is_err());
+    assert!(h.b().send_file(&ph.id, h.tmp.path().join("nope.bin")).await.is_err());
 }
 
 #[tokio::test]
@@ -1065,7 +1068,7 @@ async fn private_files_are_owner_only() {
     let h = H::new().await;
     let ph = h.pair().await;
     h.upload(&ph, "p.bin", &noise(100, 16), None).await;
-    h.b().send_text("x").unwrap();
+    h.b().send_text(&ph.id, "x").unwrap();
     for f in ["identity-key.pem", "state.json"] {
         let mode = std::fs::metadata(h.tmp.path().join("data").join(f)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{f}");
@@ -1126,7 +1129,7 @@ async fn bench_throughput_over_loopback_tls() {
     // now the other way, from a file the PC offers
     let path = h.inbox().join("bench.bin");
     let t0 = Instant::now();
-    let fref = h.b().send_file(&path).await.unwrap();
+    let fref = h.b().send_file(&ph.id, &path).await.unwrap();
     println!("prepare  checksum of {} MiB before offering: {:.2?}", TOTAL / MIB, t0.elapsed());
     let t0 = Instant::now();
     let resp = h.http.get(h.url(&format!("/api/files/{}/content", fref.id))).bearer_auth(&ph.token).send().await.unwrap();
@@ -1170,7 +1173,7 @@ async fn a_file_from_the_phone_waits_until_the_user_accepts() {
     assert_eq!(std::fs::read(h.inbox().join("wish.txt")).unwrap(), b"hello");
 
     // the message id of a file is its transfer id, and the phone is never told where it was saved
-    let n = h.b().notes(10).pop().unwrap();
+    let n = h.b().notes(&ph.id, 10).pop().unwrap();
     assert_eq!(n.mid, id);
     assert!(n.file.unwrap().local_path.is_some());
     let (_, feed) = h.get("/api/notes", &ph).await;
@@ -1227,12 +1230,12 @@ async fn the_pc_can_cancel_a_running_upload() {
 async fn replies_and_deletes_reach_the_phone() {
     let h = H::new().await;
     let ph = h.pair_as("Pixel").await;
-    let first = h.b().send_text("lunch at noon?").unwrap();
+    let first = h.b().send_text(&ph.id, "lunch at noon?").unwrap();
     assert!(!first.mid.is_empty());
-    let reply = h.b().send_text_reply("yes", Some(&first.mid)).unwrap();
+    let reply = h.b().send_text_reply(&ph.id, "yes", Some(&first.mid)).unwrap();
     let q = reply.reply.unwrap();
     assert_eq!((q.mid.as_str(), q.src.as_str(), q.preview.as_str()), (first.mid.as_str(), "pc", "lunch at noon?"));
-    assert!(h.b().send_text_reply("x", Some("nonexistent")).unwrap().reply.is_none());
+    assert!(h.b().send_text_reply(&ph.id, "x", Some("nonexistent")).unwrap().reply.is_none());
 
     // the phone answers too
     let (_, v) = h.post_json("/api/notes", Some(&ph), json!({ "text": "ok", "reply_to": first.mid })).await;
@@ -1242,20 +1245,20 @@ async fn replies_and_deletes_reach_the_phone() {
     // the phone learns about deletions, once
     let (_, v) = h.get("/api/notes", &ph).await;
     let (last, del) = (v["last_id"].as_u64().unwrap(), v["del"].as_u64().unwrap());
-    assert!(h.b().delete_note(&first.mid));
+    assert!(h.b().delete_note(&ph.id, &first.mid));
     let (_, v) = h.get(&format!("/api/notes?since={last}&del={del}&wait=2"), &ph).await;
     assert_eq!(v["deleted"], json!([first.mid]));
     let del = v["del"].as_u64().unwrap();
     let (_, v) = h.get(&format!("/api/notes?since={last}&del={del}"), &ph).await;
     assert_eq!(v["deleted"], json!([]));
-    assert!(!h.b().notes(10).iter().any(|n| n.mid == first.mid));
-    assert!(!h.b().delete_note(&first.mid), "already gone");
+    assert!(!h.b().notes(&ph.id, 10).iter().any(|n| n.mid == first.mid));
+    assert!(!h.b().delete_note(&ph.id, &first.mid), "already gone");
 
     // a phone deletes one of its own notes
-    let mid = h.b().notes(10).iter().find(|n| n.src == "Pixel").unwrap().mid.clone();
+    let mid = h.b().notes(&ph.id, 10).iter().find(|n| n.src == "Pixel").unwrap().mid.clone();
     let r = h.http.delete(h.url(&format!("/api/notes/{mid}"))).bearer_auth(&ph.token).send().await.unwrap();
     assert_eq!(r.status(), StatusCode::OK);
-    assert!(!h.b().notes(10).iter().any(|n| n.mid == mid));
+    assert!(!h.b().notes(&ph.id, 10).iter().any(|n| n.mid == mid));
 }
 
 #[tokio::test]
@@ -1265,14 +1268,209 @@ async fn deleting_a_received_file_deletes_it_from_the_inbox_but_withdrawing_an_o
     let (_, v) = h.upload(&ph, "scan.pdf", b"pdf bytes", None).await;
     let received = v["file"]["id"].as_str().unwrap().to_string();
     assert!(h.inbox().join("scan.pdf").exists());
-    assert!(h.b().delete_note(&received));
+    assert!(h.b().delete_note(&ph.id, &received));
     assert!(!h.inbox().join("scan.pdf").exists());
 
     let original = h.tmp.path().join("mine.txt");
     std::fs::write(&original, b"keep me").unwrap();
-    let f = h.b().send_file(&original).await.unwrap();
+    let f = h.b().send_file(&ph.id, &original).await.unwrap();
     assert_eq!(f.local_path.as_deref(), Some(original.canonicalize().unwrap().to_str().unwrap()));
-    assert!(h.b().delete_note(&f.id));
+    assert!(h.b().delete_note(&ph.id, &f.id));
     assert!(original.exists(), "the user's own file is never deleted");
     assert_eq!(h.get(&format!("/api/files/{}", f.id), &ph).await.0, StatusCode::NOT_FOUND, "the phone can no longer fetch it");
+}
+
+// ---------------------------------------------------------------- one conversation per phone
+
+fn texts(notes: &[Value]) -> Vec<String> {
+    notes.iter().map(|n| n["text"].as_str().unwrap_or("<file>").to_string()).collect()
+}
+
+#[tokio::test]
+async fn every_phone_only_sees_its_own_conversation() {
+    let h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    let b = h.pair_as("Galaxy").await;
+
+    h.post_json("/api/notes", Some(&a), json!({ "text": "from Pixel" })).await;
+    h.b().send_text(&a.id, "to Pixel").unwrap();
+    h.b().send_text(&b.id, "to Galaxy").unwrap();
+    h.post_json("/api/notes", Some(&b), json!({ "text": "from Galaxy" })).await;
+
+    assert_eq!(texts(&h.notes(&a).await), ["from Pixel", "to Pixel"]);
+    assert_eq!(texts(&h.notes(&b).await), ["to Galaxy", "from Galaxy"]);
+    // the PC's own view, per phone
+    assert_eq!(h.b().notes(&a.id, 10).len(), 2);
+    assert_eq!(h.b().notes(&b.id, 10).len(), 2);
+    // a phone that asks for everything since the beginning still gets only its own
+    let (_, v) = h.get("/api/notes?since=0", &b).await;
+    assert_eq!(texts(v["notes"].as_array().unwrap()), ["to Galaxy", "from Galaxy"]);
+    // the answer does not carry the internal phone id
+    assert!(!v.to_string().contains(&a.id) && !v.to_string().contains("\"dev\""), "{v}");
+}
+
+#[tokio::test]
+async fn a_message_for_one_phone_does_not_wake_the_other() {
+    let h = Arc::new(H::new().await);
+    let a = h.pair_as("Pixel").await;
+    let b = Arc::new(h.pair_as("Galaxy").await);
+    let (_, base) = h.get("/api/notes?wait=0", &b).await;
+    let since = base["last_id"].as_u64().unwrap();
+    let (h2, b2) = (h.clone(), b.clone());
+    let waiting = tokio::spawn(async move { h2.get(&format!("/api/notes?since={since}&wait=2"), &b2).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    h.b().send_text(&a.id, "only for Pixel").unwrap();
+    let (st, v) = waiting.await.unwrap();
+    assert_eq!(st, StatusCode::OK);
+    assert!(v["notes"].as_array().unwrap().is_empty(), "{v}");
+}
+
+#[tokio::test]
+async fn deleting_and_clearing_affect_only_one_phone() {
+    let h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    let b = h.pair_as("Galaxy").await;
+    let na = h.b().send_text(&a.id, "A's secret").unwrap();
+    h.b().send_text(&b.id, "B's note").unwrap();
+
+    // phone B cannot delete a message of phone A, and the PC cannot reach it through B either
+    let r = h.http.delete(h.url(&format!("/api/notes/{}", na.mid))).bearer_auth(&b.token).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert!(!h.b().delete_note(&b.id, &na.mid));
+    assert_eq!(texts(&h.notes(&a).await), ["A's secret"]);
+
+    // B is not told when A's message is deleted
+    let (_, v) = h.get("/api/notes", &b).await;
+    let (last, del) = (v["last_id"].as_u64().unwrap(), v["del"].as_u64().unwrap());
+    assert!(h.b().delete_note(&a.id, &na.mid));
+    let (_, v) = h.get(&format!("/api/notes?since={last}&del={del}"), &b).await;
+    assert_eq!(v["deleted"], json!([]), "{v}");
+
+    // clearing one phone's conversation leaves the other's
+    h.b().send_text(&a.id, "again").unwrap();
+    h.b().clear_history(&a.id);
+    assert!(h.notes(&a).await.is_empty());
+    assert_eq!(texts(&h.notes(&b).await), ["B's note"]);
+}
+
+#[tokio::test]
+async fn files_belong_to_the_phone_they_were_offered_to_or_received_from() {
+    let h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    let b = h.pair_as("Galaxy").await;
+
+    // PC -> phone A
+    let path = h.tmp.path().join("for-a.txt");
+    std::fs::write(&path, b"only for A").unwrap();
+    let f = h.b().send_file(&a.id, &path).await.unwrap();
+    assert_eq!(fetch(&h, &a, &f.id, None).await.0, StatusCode::OK);
+    assert_eq!(fetch(&h, &b, &f.id, None).await.0, StatusCode::NOT_FOUND, "phone B must not download A's file");
+    assert_eq!(h.get(&format!("/api/files/{}", f.id), &b).await.0, StatusCode::NOT_FOUND);
+    let r = h.http.post(h.url(&format!("/api/files/{}/ticket", f.id))).bearer_auth(&b.token).send().await.unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    assert!(h.notes(&b).await.is_empty(), "B is not told about A's file");
+    assert_eq!(h.notes(&a).await.len(), 1);
+
+    // phone B -> PC: appears in B's conversation only
+    h.upload(&b, "from-b.txt", b"hello", None).await;
+    assert_eq!(h.notes(&a).await.len(), 1);
+    let nb = h.notes(&b).await;
+    assert_eq!(nb.len(), 1);
+    assert_eq!(nb[0]["file"]["name"], "from-b.txt");
+    assert!(h.b().notes(&a.id, 10).iter().all(|n| n.file.as_ref().is_some_and(|f| f.dir == Direction::ToPhone)));
+
+    // a file cannot be offered to a phone that is not paired
+    assert!(h.b().send_file("not-a-phone", &path).await.is_err());
+}
+
+#[tokio::test]
+async fn an_unpaired_phone_takes_its_conversation_along() {
+    let h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    let b = h.pair_as("Galaxy").await;
+    h.b().send_text(&a.id, "old chat").unwrap();
+    h.b().send_text(&b.id, "stays").unwrap();
+    assert!(h.b().unpair(&a.id));
+    assert!(h.b().notes(&a.id, 10).is_empty());
+    // the same phone pairs again as a new device and starts with an empty conversation
+    let again = h.pair_as("Pixel").await;
+    assert!(h.notes(&again).await.is_empty());
+    assert_eq!(texts(&h.notes(&b).await), ["stays"]);
+}
+
+#[tokio::test]
+async fn conversations_survive_a_restart_per_phone() {
+    let mut h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    let b = h.pair_as("Galaxy").await;
+    h.b().send_text(&a.id, "kept for A").unwrap();
+    h.b().send_text(&b.id, "kept for B").unwrap();
+    h.restart().await;
+    assert_eq!(texts(&h.notes(&a).await), ["kept for A"]);
+    assert_eq!(texts(&h.notes(&b).await), ["kept for B"]);
+}
+
+// ---------------------------------------------------------------- two separate Clear buttons
+
+/// (in the chat, in the list "Notes and files") texts of one phone's conversation as the PC window shows them
+fn views(h: &H, dev: &str) -> (Vec<String>, Vec<String>) {
+    let all = h.b().notes(dev, 100);
+    let t = |keep: &dyn Fn(&bridge_core::Note) -> bool| all.iter().filter(|n| keep(n)).map(|n| n.text.clone().unwrap_or_default()).collect();
+    (t(&|n| !n.chat_hidden), t(&|n| !n.list_hidden))
+}
+
+#[tokio::test]
+async fn clearing_the_chat_keeps_the_list_and_the_other_way_round() {
+    let h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    let b = h.pair_as("Galaxy").await;
+    h.b().send_text(&a.id, "one").unwrap();
+    h.b().send_text(&a.id, "two").unwrap();
+    h.b().send_text(&b.id, "other phone").unwrap();
+
+    h.b().clear_chat(&a.id);
+    assert_eq!(views(&h, &a.id), (vec![], vec!["one".into(), "two".into()]));
+    // messages that come in later show up in both views again
+    h.b().send_text(&a.id, "three").unwrap();
+    assert_eq!(views(&h, &a.id), (vec!["three".into()], vec!["one".into(), "two".into(), "three".into()]));
+
+    h.b().clear_list(&a.id);
+    assert_eq!(views(&h, &a.id), (vec!["three".into()], vec![]));
+    h.b().send_text(&a.id, "four").unwrap();
+    assert_eq!(views(&h, &a.id), (vec!["three".into(), "four".into()], vec!["four".into()]));
+
+    // the other phone is untouched; "one" and "two" were cleared from both views, so this PC dropped them
+    assert_eq!(views(&h, &b.id), (vec!["other phone".into()], vec!["other phone".into()]));
+    assert_eq!(texts(&h.notes(&a).await), ["three", "four"]);
+}
+
+#[tokio::test]
+async fn a_message_cleared_from_both_views_is_gone_for_good_and_it_survives_a_restart() {
+    let mut h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    h.b().send_text(&a.id, "one").unwrap();
+    h.b().send_text(&a.id, "two").unwrap();
+    h.b().clear_chat(&a.id);
+    h.restart().await;
+    assert_eq!(views(&h, &a.id), (vec![], vec!["one".into(), "two".into()]), "the state is saved");
+    h.b().clear_list(&a.id);
+    assert!(h.b().notes(&a.id, 100).is_empty(), "cleared from both views: removed from this PC");
+    // the phone keeps its copy until the history of the conversation is cleared completely
+    h.b().send_text(&a.id, "after").unwrap();
+    h.b().clear_history(&a.id);
+    assert!(h.b().notes(&a.id, 100).is_empty());
+    assert!(h.notes(&a).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_hidden_file_is_still_offered_and_stops_when_removed_from_both_views() {
+    let h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    let path = h.tmp.path().join("doc.txt");
+    std::fs::write(&path, b"content").unwrap();
+    let f = h.b().send_file(&a.id, &path).await.unwrap();
+    h.b().clear_chat(&a.id);
+    assert_eq!(fetch(&h, &a, &f.id, None).await.0, StatusCode::OK, "cleared from the chat only: still downloadable");
+    h.b().clear_list(&a.id);
+    assert_eq!(fetch(&h, &a, &f.id, None).await.0, StatusCode::NOT_FOUND);
 }

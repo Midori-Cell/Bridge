@@ -364,7 +364,8 @@ async fn pc_conversations_never_touch_the_phone_feed() {
     let (st, v) = json_of(phone.post(b.phone_url("/api/pair")).json(&json!({ "code": code, "name": "Phone" })).send().await.unwrap()).await;
     assert_eq!(st, StatusCode::OK);
     let token = v["token"].as_str().unwrap().to_string();
-    b.b.send_text("only for the phone").unwrap();
+    let phone_id = v["device_id"].as_str().unwrap().to_string();
+    b.b.send_text(&phone_id, "only for the phone").unwrap();
 
     a.b.send_peer_text(&a_to_b, "private between PCs").await.unwrap();
     let file = noise(300_000, 3);
@@ -377,7 +378,7 @@ async fn pc_conversations_never_touch_the_phone_feed() {
     let list = notes["notes"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{notes}");
     assert_eq!(list[0]["text"], "only for the phone");
-    assert_eq!(b.b.notes(100).len(), 1);
+    assert_eq!(b.b.notes(&phone_id, 100).len(), 1);
 
     // and what the phone sends never shows up in the PC conversation
     let (st, _) = json_of(phone.post(b.phone_url("/api/notes")).bearer_auth(&token).json(&json!({ "text": "phone secret" })).send().await.unwrap()).await;
@@ -493,7 +494,7 @@ async fn a_file_arrives_identical_and_is_announced_in_the_right_conversation() {
     assert_eq!((n.src.as_str(), n.kind), ("Desk", NoteKind::File));
     assert_eq!(n.file.as_ref().unwrap().dir, Direction::FromPeer);
     assert_eq!(a.b.peer_notes(&a_to_b, 10)[0].file.as_ref().unwrap().dir, Direction::ToPeer);
-    assert!(b.b.notes(10).is_empty(), "files from a PC must not appear in the phone feed");
+    assert!(b.b.notes("", 10).is_empty(), "files from a PC must not appear in a phone feed");
 
     // the sender saw progress and a final Done
     let mut last = None;
@@ -1009,4 +1010,72 @@ async fn deleting_files_never_touches_the_other_pcs_disk() {
     assert!(!saved2.exists(), "the received copy is deleted");
     assert!(src.exists());
     eventually("message gone on A", || a.b.peer_notes(&a_to_b, 10).is_empty().then_some(())).await;
+}
+
+#[tokio::test]
+async fn an_offer_nobody_accepts_is_withdrawn_after_the_time_the_user_set() {
+    let (a, b) = (Pc::new("Desk").await, Pc::new("Laptop").await);
+    let (a_to_b, _) = pair(&a, &b).await;
+    b.b.set_auto_accept_files(false);
+    a.b.set_offer_timeout_secs(2);
+    assert_eq!(a.b.offer_timeout_secs(), 2);
+    let src = a.tmp.path().join("late.bin");
+    std::fs::write(&src, noise(50_000, 9)).unwrap();
+
+    let (tid, task) = offer(&a, &a_to_b, &b, &src).await;
+    eventually("the sender waits", || transfer_of(&a, &tid).filter(|t| t.state == TransferState::Offered)).await;
+    let started = std::time::Instant::now();
+    let res = tokio::time::timeout(Duration::from_secs(10), task).await.expect("the offer was not withdrawn").unwrap();
+    assert!(res.is_err());
+    assert!(started.elapsed() >= Duration::from_millis(1200), "withdrawn far too early: {:?}", started.elapsed());
+
+    let mine = transfer_of(&a, &tid).unwrap();
+    assert_eq!(mine.state, TransferState::Cancelled);
+    assert!(mine.error.as_deref().unwrap_or("").contains("did not accept it within 2 s"), "{:?}", mine.error);
+    // the other PC no longer shows a request it could accept, and nothing was stored
+    eventually("the other PC lets go of the offer", || transfer_of(&b, &tid).filter(|t| t.state == TransferState::Cancelled)).await;
+    assert!(!b.inbox().join("late.bin").exists());
+    assert!(!b.b.accept_file(&tid).await);
+}
+
+#[tokio::test]
+async fn with_no_limit_an_offer_keeps_waiting() {
+    let (a, b) = (Pc::new("Desk").await, Pc::new("Laptop").await);
+    let (a_to_b, _) = pair(&a, &b).await;
+    b.b.set_auto_accept_files(false);
+    assert_eq!(a.b.offer_timeout_secs(), 0);
+    let src = a.tmp.path().join("patient.bin");
+    std::fs::write(&src, noise(10_000, 3)).unwrap();
+    let (tid, task) = offer(&a, &a_to_b, &b, &src).await;
+    eventually("the sender waits", || transfer_of(&a, &tid).filter(|t| t.state == TransferState::Offered)).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(!task.is_finished());
+    assert!(b.b.accept_file(&tid).await);
+    task.await.unwrap().unwrap();
+}
+
+// ---------------------------------------------------------------- two separate Clear buttons
+
+#[tokio::test]
+async fn clear_chat_and_clear_list_are_independent_for_a_pc() {
+    let (a, b) = (Pc::new("Desk").await, Pc::new("Laptop").await);
+    let (a_to_b, b_to_a) = pair(&a, &b).await;
+    a.b.send_peer_text(&a_to_b, "one").await.unwrap();
+    a.b.send_peer_text(&a_to_b, "two").await.unwrap();
+    eventually("B has both", || (b.b.peer_notes(&b_to_a, 10).len() == 2).then_some(())).await;
+
+    let shown = |pc: &Pc, id: &str| -> (usize, usize) {
+        let n = pc.b.peer_notes(id, 10);
+        (n.iter().filter(|n| !n.chat_hidden).count(), n.iter().filter(|n| !n.list_hidden).count())
+    };
+    a.b.clear_peer_chat(&a_to_b);
+    assert_eq!(shown(&a, &a_to_b), (0, 2));
+    assert_eq!(shown(&b, &b_to_a), (2, 2), "the other PC keeps its own copy");
+    a.b.send_peer_text(&a_to_b, "three").await.unwrap();
+    assert_eq!(shown(&a, &a_to_b), (1, 3));
+    a.b.clear_peer_list(&a_to_b);
+    assert_eq!(shown(&a, &a_to_b), (1, 0));
+    a.b.clear_peer_chat(&a_to_b);
+    assert!(a.b.peer_notes(&a_to_b, 10).is_empty(), "cleared from both views");
+    assert_eq!(shown(&b, &b_to_a).0, 3);
 }

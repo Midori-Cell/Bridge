@@ -11,12 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 bridge-core = { path = "../core" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 eframe = "0.37"
 egui = "0.37"
 clap = { version = "4", features = ["derive"] }
 qrcode = { version = "0.14", default-features = false }
-tray-icon = "0.26"
 global-hotkey = "0.9"
 device_query = "4"
 rfd = "0.17"
@@ -28,8 +27,13 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Windows and macOS: the tray icon of the operating system. On Linux the tray speaks D-Bus (StatusNotifierItem) itself.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tray-icon = "0.26"
+
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk = "0.18"
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+winit = { version = "0.30", default-features = false, features = ["x11"] }
 
 # The .deb package (cargo deb -p bridge-gui). Paths are relative to this folder.
 [package.metadata.deb]

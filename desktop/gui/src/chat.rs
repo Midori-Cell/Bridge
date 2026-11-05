@@ -33,11 +33,31 @@ pub struct Chat<'a> {
     pub send_key: SendKey,
     /// The message the text box is answering, if any.
     pub reply: Option<&'a Note>,
+    /// Size of everything in the chat (messages and text box), 1.0 is normal. Set with ctrl + mouse wheel
+    /// over the chat, independently of the zoom of the rest of the window.
+    pub zoom: f32,
+    /// Width of all messages of mine / of the other side, in points at normal size. `None`: as wide as the text.
+    /// Set by dragging a message sideways.
+    pub widths: Widths,
 }
 
+/// The width the user dragged the messages to, separately for the own and the incoming ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Widths {
+    pub own: Option<f32>,
+    pub theirs: Option<f32>,
+}
+
+/// Narrowest a message can be dragged to (points at normal size).
+pub const MIN_BUBBLE_W: f32 = 120.0;
+
 pub struct ChatOut {
+    /// A message was dragged: (is it one of mine, new width in points at normal size). Every message of that side follows.
+    pub width: Option<(bool, f32)>,
     pub compose: Compose,
     pub msg: Option<MsgAction>,
+    /// Where the chat is on screen, so the window knows when ctrl + wheel is meant for it.
+    pub rect: Rect,
 }
 
 /// Id of the text box, so the window can focus it after "Reply".
@@ -62,7 +82,7 @@ pub fn show(ui: &mut Ui, height: f32, chat: Chat) -> ChatOut {
     // The scrolling part reaches to the border at the top and to the text box at the bottom, so the
     // edge fades sit exactly on the edges where messages are cut off. The padding is inside the content.
     let scroll_area = Rect::from_min_max(transcript_rect.min + vec2(16.0, 1.5), transcript_rect.max - vec2(16.0, 0.0));
-    let msg = transcript(ui, transcript_rect, scroll_area, &chat, p);
+    let (msg, width) = transcript(ui, transcript_rect, scroll_area, &chat, p);
     let (compose, clear) = composer(ui, composer_rect.shrink2(vec2(14.0, 10.0)), chat, p);
     // The mouse wheel over the messages belongs to the chat: whatever it did not use (it was at its top or
     // bottom, or there is nothing to scroll) must not scroll the page behind it. Over the text box and over
@@ -70,7 +90,7 @@ pub fn show(ui: &mut Ui, height: f32, chat: Chat) -> ChatOut {
     if wheel_zone(ui, transcript_rect) {
         ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
     }
-    ChatOut { compose, msg: msg.or(clear.then_some(MsgAction::ClearReply)) }
+    ChatOut { compose, msg: msg.or(clear.then_some(MsgAction::ClearReply)), rect, width }
 }
 
 /// Is the pointer where the mouse wheel scrolls the chat: on the messages, but not in the strip along
@@ -81,9 +101,11 @@ fn wheel_zone(ui: &Ui, transcript: Rect) -> bool {
     ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| transcript.contains(p) && p.x < right)
 }
 
-fn transcript(ui: &mut Ui, outer: Rect, area: Rect, chat: &Chat, p: Palette) -> Option<MsgAction> {
+fn transcript(ui: &mut Ui, outer: Rect, area: Rect, chat: &Chat, p: Palette) -> (Option<MsgAction>, Option<(bool, f32)>) {
     let notes = chat.notes;
+    let z = chat.zoom;
     let mut action = None;
+    let mut width = None;
     ui.scope_builder(UiBuilder::new().max_rect(area), |ui| {
         let memo = theme::id(("chat_content_height", chat.id));
         let last: f32 = ui.data(|d| d.get_temp(memo)).unwrap_or(0.0);
@@ -95,27 +117,34 @@ fn transcript(ui: &mut Ui, outer: Rect, area: Rect, chat: &Chat, p: Palette) -> 
         let out = ScrollArea::vertical()
             .scroll_source(egui::scroll_area::ScrollSource { mouse_wheel: wheel, ..Default::default() })
             .id_salt(("chat_scroll", chat.id)).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.spacing_mut().item_spacing.y = 8.0 * z;
             // a little room at the right so the red x on the corner of a file is not cut off
             ui.set_max_width(ui.available_width() - 6.0);
-            let max_w = (ui.available_width() * 0.62).max(200.0);
+            let avail = ui.available_width();
+            let max_w = (avail * 0.62).max(200.0);
             let top = ui.cursor().min.y;
             // Short conversations sit at the bottom, next to the text box, like in a messenger.
             let pad = (view - last).max(0.0);
-            ui.add_space(pad + 14.0);
+            ui.add_space(pad + 14.0 * z);
             if notes.is_empty() {
                 ui.vertical_centered(|ui| widgets::footnote(ui, "No messages yet. Type a note below, or drop files on the window."));
             }
             let now = now_secs();
             for n in notes {
                 let own = n.src == "pc";
+                // a width the user dragged to is the width of every message of that side (but never wider than the chat)
+                let fixed = (if own { chat.widths.own } else { chat.widths.theirs }).map(|w| (w * z).clamp(MIN_BUBBLE_W * z, avail.max(MIN_BUBBLE_W * z)));
                 ui.with_layout(Layout::top_down(if own { Align::Max } else { Align::Min }), |ui| {
-                    if let Some(a) = message(ui, &p, own, max_w, n, now) {
-                        action = Some(a);
+                    let (a, w) = message(ui, &p, own, fixed.unwrap_or(max_w), fixed.is_some(), avail, n, now, z);
+                    if a.is_some() {
+                        action = a;
+                    }
+                    if let Some(w) = w {
+                        width = Some((own, w));
                     }
                 });
             }
-            ui.add_space(14.0);
+            ui.add_space(14.0 * z);
             if chat.jump_to_end {
                 ui.scroll_to_cursor(Some(Align::BOTTOM));
             }
@@ -128,7 +157,7 @@ fn transcript(ui: &mut Ui, outer: Rect, area: Rect, chat: &Chat, p: Palette) -> 
         let overflow = (out.content_size.y - out.inner_rect.height()).max(0.0);
         edge_fades(ui, outer, out.state.clamped_offset().y, overflow - out.state.clamped_offset().y, p);
     });
-    action
+    (action, width)
 }
 
 /// Soft fade at the top (when scrolled down) and bottom (when more is below) of the transcript.
@@ -164,22 +193,42 @@ fn edge_fades(ui: &Ui, transcript: Rect, above: f32, below: f32, p: Palette) {
     }
 }
 
-fn corners_for(own: bool) -> CornerRadius {
-    if own { CornerRadius { nw: 18, ne: 18, sw: 18, se: 6 } } else { CornerRadius { nw: 18, ne: 18, sw: 6, se: 18 } }
+fn corners_for(own: bool, z: f32) -> CornerRadius {
+    let (big, small) = ((18.0 * z).round() as u8, (6.0 * z).round() as u8);
+    if own { CornerRadius { nw: big, ne: big, sw: big, se: small } } else { CornerRadius { nw: big, ne: big, sw: small, se: big } }
 }
 
-/// One message: the bubble plus whatever the mouse can do with it.
-fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, n: &Note, now: f64) -> Option<MsgAction> {
+/// Dragging a message sideways changes the width of all messages of its side. The free edge of the bubble (the
+/// left one for mine, the right one for the others) follows the pointer. Returns the new width in points at
+/// normal size. The pointer shows the resize cursor near that edge.
+fn bubble_drag(ui: &Ui, resp: &egui::Response, own: bool, avail: f32, z: f32) -> Option<f32> {
+    let edge = if own { resp.rect.min.x } else { resp.rect.max.x };
+    let near = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| resp.rect.contains(pos) && (pos.x - edge).abs() < 10.0 * z);
+    if near || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let dx = if resp.dragged() { resp.drag_delta().x } else { 0.0 };
+    (dx != 0.0).then(|| ((resp.rect.width() + if own { -dx } else { dx }) / z).clamp(MIN_BUBBLE_W, (avail / z).max(MIN_BUBBLE_W)))
+}
+
+/// One message: the bubble plus whatever the mouse can do with it. `fixed`: the bubble is exactly `max_w` wide
+/// (the user chose a width); otherwise it is as wide as its text, up to `max_w`. Returns what was clicked and
+/// the new width when the bubble is being dragged.
+#[allow(clippy::too_many_arguments)]
+fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, avail: f32, n: &Note, now: f64, z: f32) -> (Option<MsgAction>, Option<f32>) {
     let (fill, fg, fg2) = if own { (p.tint, p.on_tint, p.on_tint) } else { (p.bubble, p.label, p.label2) };
     if let (NoteKind::File, Some(f)) = (&n.kind, &n.file) {
-        return file_bubble(ui, p, corners_for(own), fill, fg, fg2, own, max_w, f).map(|a| match a {
+        let (click, resp) = file_bubble(ui, p, corners_for(own, z), fill, fg, fg2, own, max_w, fixed, z, f);
+        let action = click.map(|a| match a {
             FileClick::Open => MsgAction::Open(f.clone()),
             FileClick::Folder => MsgAction::ShowFolder(f.clone()),
             FileClick::Delete => MsgAction::Delete(n.mid.clone()),
         });
+        return (action, bubble_drag(ui, &resp, own, avail, z));
     }
-    let (resp, link) = text_bubble(ui, p, own, max_w, n, fill, fg, fg2);
-    let resp = resp.on_hover_text(ago(now - n.ts));
+    let (resp, link) = text_bubble(ui, p, own, max_w, fixed, z, n, fill, fg, fg2);
+    let width = bubble_drag(ui, &resp, own, avail, z);
+    let resp = if resp.dragged() { resp } else { resp.on_hover_text(ago(now - n.ts)) };
     let mut action = None;
     if let Some(url) = link {
         action = Some(MsgAction::OpenLink(url));
@@ -188,36 +237,36 @@ fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, n: &Note, now: f64) 
     }
     // Reply, copy and delete appear beside the bubble while the mouse is on it.
     let buttons = [(Icon::Reply, "Reply (or double-click the message)", false), (Icon::Copy, "Copy the text", false), (Icon::Trash, "Delete for both", true)];
-    if let Some(i) = toolbar(ui, p, resp.rect, own, &buttons, n.id) {
+    if let Some(i) = toolbar(ui, p, resp.rect, own, &buttons, n.id, z) {
         action = Some(match i {
             0 => MsgAction::Reply(n.mid.clone()),
             1 => MsgAction::Copy(n.text.clone().unwrap_or_default()),
             _ => MsgAction::Delete(n.mid.clone()),
         });
     }
-    action
+    (action, width)
 }
 
 /// A small pill of icon buttons next to a bubble, shown while the pointer is on the bubble or the pill.
 /// Returns the index of the clicked button.
-fn toolbar(ui: &mut Ui, p: &Palette, bubble: Rect, own: bool, buttons: &[(Icon, &str, bool)], salt: u64) -> Option<usize> {
-    const BTN: f32 = 28.0;
-    let w = BTN * buttons.len() as f32 + 6.0;
-    let y = bubble.min.y + 2.0;
-    let x = if own { bubble.min.x - 6.0 - w } else { bubble.max.x + 6.0 };
-    let bar = Rect::from_min_size(pos2(x, y), vec2(w, BTN + 4.0));
+fn toolbar(ui: &mut Ui, p: &Palette, bubble: Rect, own: bool, buttons: &[(Icon, &str, bool)], salt: u64, z: f32) -> Option<usize> {
+    let btn = 28.0 * z;
+    let w = btn * buttons.len() as f32 + 6.0 * z;
+    let y = bubble.min.y + 2.0 * z;
+    let x = if own { bubble.min.x - 6.0 * z - w } else { bubble.max.x + 6.0 * z };
+    let bar = Rect::from_min_size(pos2(x, y), vec2(w, btn + 4.0 * z));
     if !ui.rect_contains_pointer(bubble.union(bar).expand(2.0)) {
         return None;
     }
-    ui.painter().rect(bar, CornerRadius::same(14), p.card, Stroke::new(1.0, p.outline.gamma_multiply(0.6)), StrokeKind::Inside);
+    ui.painter().rect(bar, CornerRadius::same((14.0 * z).round() as u8), p.card, Stroke::new(1.0, p.outline.gamma_multiply(0.6)), StrokeKind::Inside);
     let mut clicked = None;
     for (i, (icon, tip, danger)) in buttons.iter().enumerate() {
-        let r = Rect::from_min_size(bar.min + vec2(3.0 + BTN * i as f32, 2.0), vec2(BTN, BTN));
+        let r = Rect::from_min_size(bar.min + vec2((3.0 * z) + btn * i as f32, 2.0 * z), vec2(btn, btn));
         let resp = ui.interact(r, theme::id(("msg_tool", salt, i)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(*tip);
         if resp.hovered() {
-            ui.painter().circle_filled(r.center(), BTN / 2.0 - 1.0, p.field_hover);
+            ui.painter().circle_filled(r.center(), btn / 2.0 - 1.0, p.field_hover);
         }
-        icons::draw(ui.painter(), *icon, r.center(), 16.0, if *danger { p.red } else { p.label });
+        icons::draw(ui.painter(), *icon, r.center(), 16.0 * z, if *danger { p.red } else { p.label });
         if resp.clicked() {
             clicked = Some(i);
         }
@@ -226,12 +275,13 @@ fn toolbar(ui: &mut Ui, p: &Palette, bubble: Rect, own: bool, buttons: &[(Icon, 
 }
 
 /// A text message, drawn by hand so the bubble is only as wide as its text and so a quote of the
-/// message it answers can sit inside it.
+/// message it answers can sit inside it. `z` is the size of the chat.
 #[allow(clippy::too_many_arguments)]
-fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, n: &Note, fill: Color32, fg: Color32, fg2: Color32) -> (egui::Response, Option<String>) {
-    let inner_max = max_w - 28.0;
+fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, z: f32, n: &Note, fill: Color32, fg: Color32, fg2: Color32) -> (egui::Response, Option<String>) {
+    let inner_max = max_w - 28.0 * z;
     let shown: String = n.text.as_deref().unwrap_or("").chars().take(2000).collect();
-    let body_font = TextStyle::Body.resolve(ui.style());
+    let mut body_font = TextStyle::Body.resolve(ui.style());
+    body_font.size *= z;
     let painter = ui.painter().clone();
     let links = find_links(&shown);
     let body = painter.layout_job(body_job(&shown, &links, body_font, fg, if own { Color32::WHITE } else { p.tint_text }, inner_max));
@@ -240,29 +290,29 @@ fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, n: &Note, fill: 
     let quote = n.reply.as_ref().map(|r| {
         let who = if r.src == "pc" { "You".to_string() } else { r.src.clone() };
         let preview: String = r.preview.split_whitespace().collect::<Vec<_>>().join(" ");
-        let name = widgets::one_line(&painter, &who, 12.0, fg, inner_max - 22.0);
-        let line = widgets::one_line(&painter, &preview, 12.0, fg2, inner_max - 22.0);
-        let w = name.size().x.max(line.size().x) + 22.0;
-        let h = 5.0 + name.size().y + 1.0 + line.size().y + 5.0;
+        let name = widgets::one_line(&painter, &who, 12.0 * z, fg, inner_max - 22.0 * z);
+        let line = widgets::one_line(&painter, &preview, 12.0 * z, fg2, inner_max - 22.0 * z);
+        let w = name.size().x.max(line.size().x) + 22.0 * z;
+        let h = 5.0 * z + name.size().y + z + line.size().y + 5.0 * z;
         (name, line, w, h)
     });
 
-    let inner_w = body.size().x.max(quote.as_ref().map_or(0.0, |q| q.2));
-    let quote_h = quote.as_ref().map_or(0.0, |q| q.3 + 6.0);
-    let (rect, resp) = ui.allocate_exact_size(vec2(inner_w + 28.0, 9.0 + quote_h + body.size().y + 9.0), Sense::click());
-    painter.rect_filled(rect, corners_for(own), fill);
-    let mut y = rect.min.y + 9.0;
+    let inner_w = if fixed { inner_max } else { body.size().x.max(quote.as_ref().map_or(0.0, |q| q.2)) };
+    let quote_h = quote.as_ref().map_or(0.0, |q| q.3 + 6.0 * z);
+    let (rect, resp) = ui.allocate_exact_size(vec2(inner_w + 28.0 * z, 9.0 * z + quote_h + body.size().y + 9.0 * z), Sense::click_and_drag());
+    painter.rect_filled(rect, corners_for(own, z), fill);
+    let mut y = rect.min.y + 9.0 * z;
     if let Some((name, line, _, h)) = quote {
-        let q = Rect::from_min_size(pos2(rect.min.x + 14.0, y), vec2(inner_w, h));
-        painter.rect_filled(q, CornerRadius::same(8), if own { Color32::from_white_alpha(40) } else { p.field });
-        painter.rect_filled(Rect::from_min_size(q.min, vec2(3.0, h)), CornerRadius::same(2), if own { Color32::WHITE } else { p.tint });
-        let ny = q.min.y + 5.0;
-        let line_y = ny + name.size().y + 1.0;
-        painter.galley(pos2(q.min.x + 11.0, ny), name, fg);
-        painter.galley(pos2(q.min.x + 11.0, line_y), line, fg2);
-        y += h + 6.0;
+        let q = Rect::from_min_size(pos2(rect.min.x + 14.0 * z, y), vec2(inner_w, h));
+        painter.rect_filled(q, CornerRadius::same((8.0 * z).round() as u8), if own { Color32::from_white_alpha(40) } else { p.field });
+        painter.rect_filled(Rect::from_min_size(q.min, vec2(3.0 * z, h)), CornerRadius::same((2.0 * z).round() as u8), if own { Color32::WHITE } else { p.tint });
+        let ny = q.min.y + 5.0 * z;
+        let line_y = ny + name.size().y + z;
+        painter.galley(pos2(q.min.x + 11.0 * z, ny), name, fg);
+        painter.galley(pos2(q.min.x + 11.0 * z, line_y), line, fg2);
+        y += h + 6.0 * z;
     }
-    let origin = pos2(rect.min.x + 14.0, y);
+    let origin = pos2(rect.min.x + 14.0 * z, y);
     let hovered_link = ui
         .input(|i| i.pointer.hover_pos())
         .filter(|pos| resp.contains_pointer() && Rect::from_min_size(origin, body.size()).contains(*pos))
@@ -308,36 +358,37 @@ enum FileClick {
 }
 
 /// A file: icon, name and size, drawn by hand so the bubble is only as wide as its text. Click opens it.
-/// While the pointer is on it, a folder button and a red x (delete) appear.
+/// While the pointer is on it, a folder button and a red x (delete) appear. `z` is the size of the chat.
 #[allow(clippy::too_many_arguments)]
-fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, fg: Color32, fg2: Color32, own: bool, max_w: f32, f: &FileRef) -> Option<FileClick> {
-    const RESERVED: f32 = 40.0; // room at the right for the folder button
+fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, fg: Color32, fg2: Color32, own: bool, max_w: f32, fixed: bool, z: f32, f: &FileRef) -> (Option<FileClick>, egui::Response) {
+    let reserved = 40.0 * z; // room at the right for the folder button
     let sub = match f.dir {
         Direction::ToPc | Direction::FromPeer => format!("{} \u{b7} saved to the inbox", size(f.size)),
         Direction::ToPhone => format!("{} \u{b7} offered to the phone", size(f.size)),
         Direction::ToPeer => format!("{} \u{b7} sent", size(f.size)),
     };
-    let text_max = (max_w - 14.0 - 36.0 - 10.0 - RESERVED).max(60.0);
-    let name = widgets::one_line(ui.painter(), &f.name, 14.0, fg, text_max);
-    let sub = widgets::one_line(ui.painter(), &sub, 12.0, fg2, text_max);
+    let text_max = (max_w - (14.0 + 36.0 + 10.0 + 40.0) * z).max(60.0 * z);
+    let name = widgets::one_line(ui.painter(), &f.name, 14.0 * z, fg, text_max);
+    let sub = widgets::one_line(ui.painter(), &sub, 12.0 * z, fg2, text_max);
     let text_w = name.size().x.max(sub.size().x);
-    let (rect, resp) = ui.allocate_exact_size(vec2(14.0 + 36.0 + 10.0 + text_w + RESERVED, 36.0 + 18.0), Sense::click());
+    let width = if fixed { max_w } else { (14.0 + 36.0 + 10.0) * z + text_w + reserved };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, (36.0 + 18.0) * z), Sense::click_and_drag());
     let openable = f.local_path.is_some();
-    let resp = if openable { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
+    let resp = if openable && !resp.dragged() { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
     // The two small buttons sit on top of the bubble. Their places are known up front so that the tooltip
     // of the bubble ("Open") is only shown where the pointer is not on one of them.
-    let folder_r = Rect::from_center_size(pos2(rect.max.x - 24.0, rect.max.y - 18.0), vec2(28.0, 28.0));
+    let folder_r = Rect::from_center_size(pos2(rect.max.x - 24.0 * z, rect.max.y - 18.0 * z), vec2(28.0 * z, 28.0 * z));
     // The red x sits on the rounded top right corner of the bubble, half inside and half outside.
-    let delete_r = Rect::from_center_size(pos2(rect.max.x - 5.3, rect.min.y + 5.3), vec2(20.0, 20.0));
+    let delete_r = Rect::from_center_size(pos2(rect.max.x - 5.3 * z, rect.min.y + 5.3 * z), vec2(20.0 * z, 20.0 * z));
     let on_buttons = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| delete_r.contains(pos) || (openable && folder_r.contains(pos)));
     let painter = ui.painter().clone();
     painter.rect_filled(rect, corners, fill);
-    let icon = Rect::from_min_size(rect.min + vec2(14.0, 9.0), vec2(36.0, 36.0));
-    painter.rect_filled(icon, CornerRadius::same(FIELD_RADIUS), if own { Color32::from_white_alpha(56) } else { p.field });
-    icons::draw(&painter, Icon::File, icon.center(), 18.0, fg);
-    let x = icon.max.x + 10.0;
-    painter.galley(pos2(x, rect.min.y + 10.0), name, fg);
-    painter.galley(pos2(x, rect.min.y + 29.0), sub, fg2);
+    let icon = Rect::from_min_size(rect.min + vec2(14.0 * z, 9.0 * z), vec2(36.0 * z, 36.0 * z));
+    painter.rect_filled(icon, CornerRadius::same((FIELD_RADIUS as f32 * z).round() as u8), if own { Color32::from_white_alpha(56) } else { p.field });
+    icons::draw(&painter, Icon::File, icon.center(), 18.0 * z, fg);
+    let x = icon.max.x + 10.0 * z;
+    painter.galley(pos2(x, rect.min.y + 10.0 * z), name, fg);
+    painter.galley(pos2(x, rect.min.y + 29.0 * z), sub, fg2);
 
     let mut action = if resp.clicked() && openable && !on_buttons { Some(FileClick::Open) } else { None };
     if ui.rect_contains_pointer(rect) || ui.rect_contains_pointer(delete_r) {
@@ -346,9 +397,9 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
             let r = folder_r;
             let b = ui.interact(r, theme::id(("file_folder", id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Show in folder");
             if b.hovered() {
-                painter.circle_filled(r.center(), 14.0, if own { Color32::from_white_alpha(56) } else { p.field });
+                painter.circle_filled(r.center(), 14.0 * z, if own { Color32::from_white_alpha(56) } else { p.field });
             }
-            icons::draw(&painter, Icon::Folder, r.center(), 17.0, fg);
+            icons::draw(&painter, Icon::Folder, r.center(), 17.0 * z, fg);
             if b.clicked() {
                 action = Some(FileClick::Folder);
             }
@@ -360,17 +411,17 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
         };
         let r = delete_r;
         let b = ui.interact(r, theme::id(("file_delete", id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
-        painter.circle_filled(r.center(), 9.0, if b.hovered() { Color32::from_rgb(0xB0, 0x00, 0x14) } else { p.red.linear_multiply(1.0) });
-        painter.circle_stroke(r.center(), 9.0, Stroke::new(1.5, p.chat));
-        icons::draw(&painter, Icon::Close, r.center(), 10.0, Color32::WHITE);
+        painter.circle_filled(r.center(), 9.0 * z, if b.hovered() { Color32::from_rgb(0xB0, 0x00, 0x14) } else { p.red.linear_multiply(1.0) });
+        painter.circle_stroke(r.center(), 9.0 * z, Stroke::new(1.5, p.chat));
+        icons::draw(&painter, Icon::Close, r.center(), 10.0 * z, Color32::WHITE);
         if b.clicked() {
             action = Some(FileClick::Delete);
         }
     }
     if openable && !on_buttons {
-        resp.on_hover_text("Open");
+        resp.clone().on_hover_text("Open");
     }
-    action
+    (action, resp)
 }
 
 fn composer(ui: &mut Ui, area: Rect, chat: Chat, p: Palette) -> (Compose, bool) {
@@ -416,6 +467,10 @@ fn composer(ui: &mut Ui, area: Rect, chat: Chat, p: Palette) -> (Compose, bool) 
     }
     ui.scope_builder(UiBuilder::new().max_rect(field.shrink2(vec2(12.0, 10.0))), |ui| {
         ScrollArea::vertical().id_salt("composer_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            // the text you type follows the size of the chat too
+            if let Some(body) = ui.style_mut().text_styles.get_mut(&TextStyle::Body) {
+                body.size *= chat.zoom;
+            }
             let edit = ui.add(
                 egui::TextEdit::multiline(chat.text)
                     .id(composer_id())

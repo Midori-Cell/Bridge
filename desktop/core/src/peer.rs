@@ -366,7 +366,7 @@ impl Shared {
             let id = p.next_id;
             p.next_id += 1;
             let list = p.peer_notes.entry(fp.to_string()).or_default();
-            let note = Note { id, mid, ts: now_ts(), src: src.to_string(), kind, text, file, reply };
+            let note = Note { id, mid, ts: now_ts(), src: src.to_string(), dev: String::new(), kind, text, file, reply, chat_hidden: false, list_hidden: false };
             list.push(note.clone());
             if list.len() > PEER_HISTORY {
                 let n = list.len() - PEER_HISTORY;
@@ -408,9 +408,12 @@ impl Shared {
         p.peer_notes.get(fp).map(|l| l.iter().rev().take(limit).rev().cloned().collect()).unwrap_or_default()
     }
 
-    pub(crate) fn clear_peer_notes(&self, fp: &str) {
+    /// Clear the chat, the list "Notes and files" or both for one paired PC.
+    pub(crate) fn clear_peer_notes(&self, fp: &str, what: Clear) {
         let mut p = lock(&self.persist);
-        p.peer_notes.remove(fp);
+        if let Some(list) = p.peer_notes.get_mut(fp) {
+            what.apply(list, |_| true);
+        }
         self.save(&p);
     }
 
@@ -930,10 +933,21 @@ impl Shared {
             info.state = TransferState::Offered;
             self.set_transfer(info.clone());
             let mut fails = 0u32;
+            let asked_at = Instant::now();
             loop {
                 tokio::select! {
                     _ = cancelled(cancel) => return Err(PeerError::Cancelled),
                     _ = tokio::time::sleep(Duration::from_millis(700)) => {}
+                }
+                // The user may set a limit for how long an offer waits. The setting is read each round, so a
+                // change applies to offers that are already waiting.
+                let limit = self.offer_timeout_secs();
+                if limit > 0 && asked_at.elapsed() >= Duration::from_secs(u64::from(limit)) {
+                    info.state = TransferState::Cancelled;
+                    info.error = Some(format!("{peer_name} did not accept it within {limit} s"));
+                    self.set_transfer(info.clone());
+                    // `Cancelled` also tells the other PC (best effort), which then drops its pending offer
+                    return Err(PeerError::Cancelled);
                 }
                 match client.get(&status_url).timeout(Duration::from_secs(8)).send().await {
                     Ok(resp) if resp.status() == StatusCode::NOT_FOUND => {

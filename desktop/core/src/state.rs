@@ -53,7 +53,8 @@ struct TransferBook {
 #[derive(Default)]
 struct DeleteLog {
     seq: u64,
-    items: VecDeque<(u64, String)>,
+    /// (sequence number, phone, message id)
+    items: VecDeque<(u64, String, String)>,
 }
 
 const DELETE_LOG: usize = 1000;
@@ -104,6 +105,31 @@ pub(crate) fn clean_name(raw: &str) -> String {
     raw.chars().filter(|c| !c.is_control()).take(40).collect::<String>().trim().to_string()
 }
 
+/// Older versions kept one conversation for all phones. Give each old message to the phone it belonged to:
+/// a message from a phone to the phone with that name, a message from this PC (it went to every phone) to
+/// the phone that was paired first, which is nearly always the only one there was. Whatever cannot be
+/// assigned is dropped, so no phone ever receives a message that was not meant for it.
+fn migrate_phone_notes(p: &mut Persist) {
+    let first = p.devices.iter().min_by(|a, b| a.1.created.total_cmp(&b.1.created)).map(|(id, _)| id.clone());
+    for n in p.notes.iter_mut().filter(|n| n.dev.is_empty()) {
+        let named: Vec<&String> = p.devices.iter().filter(|(_, d)| d.name == n.src).map(|(id, _)| id).collect();
+        n.dev = match (n.src.as_str(), named.as_slice()) {
+            ("pc", _) | (_, []) => first.clone().unwrap_or_default(),
+            (_, [one]) => (*one).clone(),
+            _ => first.clone().unwrap_or_default(),
+        };
+    }
+    p.notes.retain(|n| !n.dev.is_empty() && p.devices.contains_key(&n.dev));
+    let owners: std::collections::HashMap<String, String> =
+        p.notes.iter().filter_map(|n| n.file.as_ref().map(|f| (f.id.clone(), n.dev.clone()))).collect();
+    for (id, o) in p.offers.iter_mut() {
+        if o.dev.is_empty() {
+            o.dev = owners.get(id).cloned().unwrap_or_default();
+        }
+    }
+    p.offers.retain(|_, o| !o.dev.is_empty());
+}
+
 /// The quote for a reply to `mid`, from our own copy of that message.
 pub(crate) fn reply_for(notes: &[Note], mid: &str) -> Option<Reply> {
     let n = notes.iter().find(|n| n.mid == mid)?;
@@ -143,6 +169,7 @@ impl Shared {
                 n.mid = n.file.as_ref().map_or_else(|| format!("old{}", n.id), |f| f.id.clone());
             }
         }
+        migrate_phone_notes(&mut persist);
         let max_id = persist.notes.iter().map(|n| n.id).chain(persist.peer_notes.values().flatten().map(|n| n.id)).max().unwrap_or(0);
         persist.next_id = persist.next_id.max(max_id + 1);
         let (wake, _) = watch::channel(0);
@@ -289,6 +316,10 @@ impl Shared {
         Some(Device { id, name, created, last_seen: Some(now) })
     }
 
+    pub fn device_name(&self, id: &str) -> Option<String> {
+        lock(&self.persist).devices.get(id).map(|d| d.name.clone())
+    }
+
     pub fn device_exists(&self, id: &str) -> bool {
         lock(&self.persist).devices.contains_key(id)
     }
@@ -322,6 +353,9 @@ impl Shared {
             let mut p = lock(&self.persist);
             let existed = p.devices.remove(id).is_some();
             if existed {
+                // the conversation with an unpaired phone goes with it (files already received stay in the inbox)
+                p.notes.retain(|n| n.dev != id);
+                p.offers.retain(|_, o| o.dev != id);
                 self.save(&p);
             }
             existed
@@ -347,32 +381,44 @@ impl Shared {
 
     // ------------------------------------------------------------ notes
 
-    /// `reply_to`: the message id this note answers (looked up in the phone conversation).
-    pub fn add_text_note(&self, src: &str, text: &str, reply_to: Option<&str>) -> std::result::Result<Note, NoteError> {
+    /// `dev`: the phone whose conversation this belongs to; `src`: "pc" or that phone's name.
+    /// `reply_to`: the message id this note answers (looked up in the same conversation).
+    pub fn add_text_note(&self, dev: &str, src: &str, text: &str, reply_to: Option<&str>) -> std::result::Result<Note, NoteError> {
         if text.trim().is_empty() {
             return Err(NoteError::Empty);
         }
         if text.chars().count() > MAX_TEXT_CHARS {
             return Err(NoteError::TooLong);
         }
-        Ok(self.push_note(src, NoteKind::Text, random_hex(8), Some(text.to_string()), None, reply_to))
+        Ok(self.push_note(dev, src, NoteKind::Text, random_hex(8), Some(text.to_string()), None, reply_to))
     }
 
-    pub fn add_file_note(&self, src: &str, file: FileRef) -> Note {
+    pub fn add_file_note(&self, dev: &str, src: &str, file: FileRef) -> Note {
         let mid = file.id.clone();
-        self.push_note(src, NoteKind::File, mid, None, Some(file), None)
+        self.push_note(dev, src, NoteKind::File, mid, None, Some(file), None)
     }
 
-    fn push_note(&self, src: &str, kind: NoteKind, mid: String, text: Option<String>, file: Option<FileRef>, reply_to: Option<&str>) -> Note {
+    #[allow(clippy::too_many_arguments)]
+    fn push_note(&self, dev: &str, src: &str, kind: NoteKind, mid: String, text: Option<String>, file: Option<FileRef>, reply_to: Option<&str>) -> Note {
         let note = {
             let mut p = lock(&self.persist);
-            let reply = reply_to.and_then(|m| reply_for(&p.notes, m));
-            let note = Note { id: p.next_id, mid, ts: now_ts(), src: src.to_string(), kind, text, file, reply };
+            let mine: Vec<Note> = p.notes.iter().filter(|n| n.dev == dev).cloned().collect();
+            let reply = reply_to.and_then(|m| reply_for(&mine, m));
+            let note = Note { id: p.next_id, mid, ts: now_ts(), src: src.to_string(), dev: dev.to_string(), kind, text, file, reply, chat_hidden: false, list_hidden: false };
             p.next_id += 1;
             p.notes.push(note.clone());
-            if p.notes.len() > HISTORY {
-                let drop_n = p.notes.len() - HISTORY;
-                p.notes.drain(..drop_n);
+            // the history limit counts per phone, so a chatty phone cannot push out another one's messages
+            let count = p.notes.iter().filter(|n| n.dev == dev).count();
+            if count > HISTORY {
+                let mut drop_n = count - HISTORY;
+                p.notes.retain(|n| {
+                    if n.dev == dev && drop_n > 0 {
+                        drop_n -= 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
                 // forget offers that no remaining note refers to
                 let keep: HashSet<String> =
                     p.notes.iter().filter_map(|n| n.file.as_ref().map(|f| f.id.clone())).collect();
@@ -386,34 +432,40 @@ impl Shared {
         note
     }
 
-    /// With `since = None`, the most recent `limit` notes; otherwise notes newer than `since`.
-    pub fn notes_since(&self, since: Option<u64>, limit: usize) -> Vec<Note> {
+    /// The conversation with phone `dev`. With `since = None`, the most recent `limit` notes; otherwise
+    /// notes newer than `since`. Notes of other phones are never included.
+    pub fn notes_since(&self, dev: &str, since: Option<u64>, limit: usize) -> Vec<Note> {
         let p = lock(&self.persist);
         match since {
-            None => p.notes.iter().rev().take(limit).rev().cloned().collect(),
-            Some(s) => p.notes.iter().filter(|n| n.id > s).take(limit).cloned().collect(),
+            None => {
+                let mut v: Vec<Note> = p.notes.iter().rev().filter(|n| n.dev == dev).take(limit).cloned().collect();
+                v.reverse();
+                v
+            }
+            Some(s) => p.notes.iter().filter(|n| n.dev == dev && n.id > s).take(limit).cloned().collect(),
         }
     }
 
-    pub fn clear_notes(&self) {
-        let mids: Vec<String> = {
-            let mut p = lock(&self.persist);
-            let mids = p.notes.iter().map(|n| n.mid.clone()).collect();
-            p.notes.clear();
-            p.offers.clear();
-            self.save(&p);
-            mids
-        };
-        self.log_deleted(mids);
-        self.wake_pollers();
+    /// Clear the chat, the list "Notes and files" or both for the conversation with one phone (the other
+    /// phones keep theirs). The two views are independent. Only the view on this PC is cleared: the phone
+    /// keeps its own copy. A file offered to the phone stops being available once its message is gone from
+    /// both views.
+    pub fn clear_notes(&self, dev: &str, what: Clear) {
+        let mut p = lock(&self.persist);
+        let gone = what.apply(&mut p.notes, |n| n.dev == dev);
+        for f in gone.iter().filter_map(|n| n.file.as_ref()) {
+            p.offers.remove(&f.id);
+        }
+        self.save(&p);
     }
 
-    /// Delete one message from the phone conversation. A file received from a phone is deleted from
-    /// the inbox too; a file offered to phones stops being available (the original is never touched).
-    pub fn delete_note(&self, mid: &str) -> bool {
+    /// Delete one message from the conversation with phone `dev`. A file received from a phone is deleted
+    /// from the inbox too; a file offered to the phone stops being available (the original is never touched).
+    /// A message of another phone is not found.
+    pub fn delete_note(&self, dev: &str, mid: &str) -> bool {
         let removed = {
             let mut p = lock(&self.persist);
-            let Some(pos) = p.notes.iter().position(|n| n.mid == mid) else { return false };
+            let Some(pos) = p.notes.iter().position(|n| n.mid == mid && n.dev == dev) else { return false };
             let note = p.notes.remove(pos);
             if let Some(f) = &note.file {
                 p.offers.remove(&f.id);
@@ -424,28 +476,28 @@ impl Shared {
             self.save(&p);
             note
         };
-        self.log_deleted(vec![removed.mid.clone()]);
+        self.log_deleted(dev, vec![removed.mid.clone()]);
         self.emit(Event::NoteRemoved { peer_id: None, mid: removed.mid });
         self.wake_pollers();
         true
     }
 
-    fn log_deleted(&self, mids: Vec<String>) {
+    fn log_deleted(&self, dev: &str, mids: Vec<String>) {
         let mut d = lock(&self.deleted);
         for m in mids {
             d.seq += 1;
             let seq = d.seq;
-            d.items.push_back((seq, m));
+            d.items.push_back((seq, dev.to_string(), m));
         }
         while d.items.len() > DELETE_LOG {
             d.items.pop_front();
         }
     }
 
-    /// Message ids deleted after `seq`, and the current sequence number.
-    pub fn deleted_since(&self, seq: u64) -> (Vec<String>, u64) {
+    /// Message ids deleted from the conversation with phone `dev` after `seq`, and the current sequence number.
+    pub fn deleted_since(&self, dev: &str, seq: u64) -> (Vec<String>, u64) {
         let d = lock(&self.deleted);
-        (d.items.iter().filter(|(s, _)| *s > seq).map(|(_, m)| m.clone()).collect(), d.seq)
+        (d.items.iter().filter(|(s, w, _)| *s > seq && w == dev).map(|(_, _, m)| m.clone()).collect(), d.seq)
     }
 
     pub fn auto_accept_files(&self) -> bool {
@@ -460,6 +512,19 @@ impl Shared {
         }
     }
 
+    /// Seconds after which an unaccepted file offer to another PC is withdrawn; 0 means never.
+    pub fn offer_timeout_secs(&self) -> u32 {
+        lock(&self.persist).offer_timeout_secs
+    }
+
+    pub fn set_offer_timeout_secs(&self, secs: u32) {
+        let mut p = lock(&self.persist);
+        if p.offer_timeout_secs != secs {
+            p.offer_timeout_secs = secs;
+            self.save(&p);
+        }
+    }
+
     // ------------------------------------------------------------ offers (PC -> phone files)
 
     pub fn put_offer(&self, rec: OfferRec) {
@@ -468,8 +533,9 @@ impl Shared {
         self.save(&p);
     }
 
-    pub fn offer(&self, id: &str) -> Option<OfferRec> {
-        lock(&self.persist).offers.get(id).cloned()
+    /// The file `id` as far as phone `dev` may see it: only the phone it was offered to.
+    pub fn offer_for(&self, dev: &str, id: &str) -> Option<OfferRec> {
+        lock(&self.persist).offers.get(id).filter(|o| o.dev == dev).cloned()
     }
 
     // ------------------------------------------------------------ download tickets
@@ -542,4 +608,50 @@ impl Shared {
 
 pub(crate) fn lock_mutex<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     lock(m)
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use crate::model::{DeviceRec, FileRef, OfferRec};
+
+    fn note(id: u64, src: &str, text: &str) -> Note {
+        Note { id, mid: format!("m{id}"), ts: 0.0, src: src.into(), dev: String::new(), kind: NoteKind::Text, text: Some(text.into()), file: None, reply: None, chat_hidden: false, list_hidden: false }
+    }
+
+    fn device(name: &str, created: f64) -> DeviceRec {
+        DeviceRec { name: name.into(), token_hash: String::new(), created }
+    }
+
+    #[test]
+    fn old_shared_notes_are_split_between_the_phones_that_had_them() {
+        let mut p = Persist::default();
+        p.devices.insert("first".into(), device("Pixel", 1.0));
+        p.devices.insert("second".into(), device("Galaxy", 2.0));
+        p.notes = vec![note(1, "Pixel", "p1"), note(2, "pc", "to everybody"), note(3, "Galaxy", "g1"), note(4, "Gone phone", "orphan")];
+        let file = FileRef { id: "f1".into(), name: "a.txt".into(), size: 1, sha256: String::new(), dir: crate::model::Direction::ToPhone, local_path: None };
+        let mut n5 = note(5, "pc", "");
+        n5.kind = NoteKind::File;
+        n5.file = Some(file);
+        p.notes.push(n5);
+        p.offers.insert("f1".into(), OfferRec { id: "f1".into(), dev: String::new(), name: "a.txt".into(), size: 1, sha256: String::new(), path: "/x".into(), mtime_ns: 0 });
+        p.offers.insert("lost".into(), OfferRec { id: "lost".into(), dev: String::new(), name: "b".into(), size: 1, sha256: String::new(), path: "/y".into(), mtime_ns: 0 });
+
+        migrate_phone_notes(&mut p);
+
+        let of = |dev: &str| -> Vec<&str> { p.notes.iter().filter(|n| n.dev == dev).map(|n| n.mid.as_str()).collect() };
+        // a message of a phone goes to that phone; a message of the PC (and one from an unknown phone) to the first
+        assert_eq!(of("second"), ["m3"]);
+        assert_eq!(of("first"), ["m1", "m2", "m4", "m5"]);
+        assert!(p.notes.iter().all(|n| !n.dev.is_empty()));
+        assert_eq!(p.offers["f1"].dev, "first");
+        assert!(!p.offers.contains_key("lost"), "an offer nobody owns is dropped");
+    }
+
+    #[test]
+    fn without_any_phone_old_notes_are_dropped() {
+        let mut p = Persist { notes: vec![note(1, "pc", "x")], ..Persist::default() };
+        migrate_phone_notes(&mut p);
+        assert!(p.notes.is_empty());
+    }
 }

@@ -164,36 +164,52 @@ async fn run_command(bridge: &Arc<Bridge>, line: &str, light: bool) -> bool {
             }
             None => println!("Usage: unpair <number>  (see 'devices')"),
         },
-        "text" => match bridge.send_text(rest) {
-            Ok(_) => println!("Sent."),
-            Err(e) => println!("Not sent: {e:?}"),
-        },
+        // The console has no chat window, so it writes to each paired phone's own conversation.
+        "text" => {
+            let phones = bridge.devices();
+            if phones.is_empty() {
+                println!("No phone is paired.");
+            }
+            for d in phones {
+                match bridge.send_text(&d.id, rest) {
+                    Ok(_) => println!("Sent to {}.", d.name),
+                    Err(e) => println!("Not sent to {}: {e:?}", d.name),
+                }
+            }
+        }
         "send" => {
             let path = PathBuf::from(rest.trim_matches(|c| c == '"' || c == '\''));
             if rest.is_empty() {
                 println!("Usage: send <path>");
             } else {
-                let b = bridge.clone();
-                tokio::spawn(async move {
-                    match b.send_file(&path).await {
-                        Ok(f) => println!("[file] ready for the phone: {} ({})", f.name, size(f.size)),
-                        Err(e) => println!("[file] could not offer {}: {e}", path.display()),
-                    }
-                });
+                for d in bridge.devices() {
+                    let (b, path) = (bridge.clone(), path.clone());
+                    tokio::spawn(async move {
+                        match b.send_file(&d.id, &path).await {
+                            Ok(f) => println!("[file] ready for {}: {} ({})", d.name, f.name, size(f.size)),
+                            Err(e) => println!("[file] could not offer {} to {}: {e}", path.display(), d.name),
+                        }
+                    });
+                }
             }
         }
         "history" => {
             let n = rest.parse::<usize>().unwrap_or(10);
-            for note in bridge.notes(n) {
-                match (note.text, note.file) {
-                    (Some(t), _) => println!("  [{}] {t}", note.src),
-                    (_, Some(f)) => println!("  [{}] file {} ({})", note.src, f.name, size(f.size)),
-                    _ => {}
+            for d in bridge.devices() {
+                println!("{}:", d.name);
+                for note in bridge.notes(&d.id, n) {
+                    match (note.text, note.file) {
+                        (Some(t), _) => println!("  [{}] {t}", note.src),
+                        (_, Some(f)) => println!("  [{}] file {} ({})", note.src, f.name, size(f.size)),
+                        _ => {}
+                    }
                 }
             }
         }
         "clear" => {
-            bridge.clear_history();
+            for d in bridge.devices() {
+                bridge.clear_history(&d.id);
+            }
             println!("History cleared.");
         }
         "inbox" => println!("{}", bridge.inbox_dir().display()),

@@ -35,7 +35,7 @@ What another PC can see of you: your PC's name, nothing else. Not your phone, yo
 **The sidebar** lists your paired phones and PCs with their last activity and a short preview. **Search** filters them by
 name or last message. **Settings** is at the bottom.
 
-**A conversation** shows your messages on the right in blue and theirs on the left.
+**A conversation** shows your messages on the right in blue and theirs on the left. Every device has its own conversation: a phone only ever gets the messages and files that were sent between it and this PC, never those of another phone.
 
 - **Send text:** type in the box and press *Send* (or Ctrl+Enter; the key is a setting). **Clipboard** (phones only) sends
   the text you copied.
@@ -47,23 +47,32 @@ name or last message. **Settings** is at the bottom.
   (`.exe`, `.sh`, `.bat` and so on) are never started from Bridge; clicking them shows their folder instead.
 - **Links:** web addresses in messages are underlined; click one to open it in your browser.
 - **Chat height:** drag the small grip under the chat. Double-click it to make the chat follow the window again.
+- **Message width:** drag a message to the left or right. All your messages (or, if you drag an incoming one, all incoming
+  messages) get that width. *Settings > Message width > Reset* makes every message as wide as its text again.
 - **Notes and files**, below the chat, is the history with *Copy*, *Open* and *Show folder* for every item.
-- **Zoom:** Ctrl + mouse wheel, or Ctrl +/- and Ctrl 0, from 60 to 200 %.
+- **Clear chat** (above the chat) and **Clear list** (above Notes and files) work independently: clearing one leaves the
+  other as it is. A message disappears from this PC for good once it is cleared from both. Only this PC is affected;
+  the other device keeps its copy. Files you received stay in your inbox folder.
+- **Zoom:** Ctrl + mouse wheel zooms the whole window, or Ctrl +/- and Ctrl 0, from 60 to 200 %. With the pointer on the chat,
+  Ctrl + mouse wheel changes only the size of the messages and the text box (70 to 220 %); *Settings > Chat size > Reset* undoes it.
 
 **Receiving files from another PC:** a card says "NAME wants to send a file" with **Accept** and **Decline**. Nothing is
 received until you accept, and offers expire after 15 minutes. You can turn the question off in *Settings > Ask before
-receiving a file*. A transfer in progress can be cancelled by either side.
+receiving a file*. A transfer in progress can be cancelled by either side. For files you send to another PC, *Settings >
+Stop a file request that is not accepted after* withdraws the request automatically after that many seconds (0: wait until
+the other person answers).
 
 **Unpair** (right-click a device, or use the button in its conversation) removes the pairing and the conversation here.
 A PC you unpair is told and removes its side too; a phone notices the next time it connects.
 
 ## Tray icon and hotkey
 
-- The **tray icon** (right-click) has *Open Bridge*, *Send clipboard to phone* and *Quit*. With *Keep running in the tray*
+- The **tray icon**: a click brings the window back, a right click opens the menu with *Open Bridge*, *Send clipboard to phone* and *Quit*. With *Keep running in the tray*
   turned on in Settings, closing the window keeps Bridge running (on a Mac the window goes to the Dock, like the yellow
   button, and a click on the Dock icon brings it back).
 - Only one Bridge runs per computer. Starting it again, for example from the taskbar, brings the running window to the front.
 - The **hotkey** (default Ctrl+Alt+B) sends the text you copied to your phone from anywhere on the desktop.
+  With several phones paired it goes to the phone whose conversation is open, otherwise to the phone that was seen most recently. The same applies to *Send clipboard to phone* in the tray menu.
   *Settings > Send clipboard to phone hotkey* opens a window where you press your own combination: hold as many keys as
   you like, then click *Accept*. *Reset* restores the default. The switch next to it turns the hotkey off.
   On a Mac, combinations that use plain letters need *Accessibility* permission (System Settings > Privacy & Security).
@@ -91,8 +100,12 @@ looking for other PCs.
 
 ## Linux notes
 
-- The tray icon needs a system tray. KDE, XFCE, Cinnamon and most others have one; GNOME needs the AppIndicator extension.
+- The tray icon needs a system tray that supports StatusNotifierItem. KDE, XFCE, Cinnamon and most others have one; GNOME needs
+  the AppIndicator extension. A left click on the icon shows the window and a right click opens the menu.
   Without a tray, closing the window quits Bridge.
+- On a **Wayland** session a window cannot be hidden, so Bridge starts the window through XWayland when *Keep running in the
+  tray* is on (it needs a restart after switching it on). Without XWayland, closing the window quits Bridge. On any desktop,
+  Bridge ends cleanly when you log out or shut down.
 - The global hotkey needs X11 (or XWayland). On a pure Wayland session Settings shows "Hotkey unavailable"; everything else works.
 - The file picker uses the desktop portal (`xdg-desktop-portal`), which current desktops include.
 

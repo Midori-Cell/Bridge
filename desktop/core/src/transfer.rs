@@ -590,7 +590,7 @@ impl Shared {
             return Ok(fref);
         }
         let fref = FileRef { id: id.to_string(), name: final_name, size, sha256: hash, dir: Direction::ToPc, local_path };
-        self.add_file_note(&dev_name, fref.clone());
+        self.add_file_note(&dev_id, &dev_name, fref.clone());
         Ok(fref)
     }
 
@@ -695,7 +695,8 @@ impl Shared {
 
     /// Make a local file available to paired phones. Computes the checksum first, so a big
     /// file takes a moment; call it from a background task in a UI.
-    pub async fn make_offer(self: &Arc<Self>, path: &Path) -> Result<FileRef, Error> {
+    pub async fn make_offer(self: &Arc<Self>, dev_id: &str, path: &Path) -> Result<FileRef, Error> {
+        let dev_name = self.device_name(dev_id).ok_or_else(|| Error::Invalid("that phone is not paired".into()))?;
         let path = tokio::fs::canonicalize(path).await?;
         let meta = tokio::fs::metadata(&path).await?;
         if !meta.is_file() {
@@ -710,8 +711,8 @@ impl Shared {
             done: 0,
             dir: Direction::ToPhone,
             state: TransferState::Hashing,
-            device: String::new(),
-            device_id: String::new(),
+            device: dev_name.clone(),
+            device_id: dev_id.to_string(),
             error: None,
         };
         self.set_transfer(info.clone());
@@ -739,19 +740,19 @@ impl Shared {
             return Err(Error::Invalid("file changed while it was being read".into()));
         }
         let local_path = Some(path.to_string_lossy().into_owned());
-        self.put_offer(OfferRec { id: id.clone(), name: name.clone(), size: meta.len(), sha256: sha256.clone(), path, mtime_ns: mtime_ns(&meta) });
+        self.put_offer(OfferRec { id: id.clone(), dev: dev_id.to_string(), name: name.clone(), size: meta.len(), sha256: sha256.clone(), path, mtime_ns: mtime_ns(&meta) });
         info.state = TransferState::Done;
         info.done = info.size;
         self.set_transfer(info);
         self.forget_transfer(&id); // transient: downloads get their own entries
         let fref = FileRef { id, name, size: meta.len(), sha256, dir: Direction::ToPhone, local_path };
-        self.add_file_note("pc", fref.clone());
+        self.add_file_note(dev_id, "pc", fref.clone());
         Ok(fref)
     }
 
     /// Open an offered file, refusing it if it vanished or changed since it was hashed.
-    pub(crate) async fn open_offer(&self, id: &str) -> Result<(OfferRec, File), ApiError> {
-        let rec = self.offer(id).ok_or_else(ApiError::not_found)?;
+    pub(crate) async fn open_offer(&self, dev_id: &str, id: &str) -> Result<(OfferRec, File), ApiError> {
+        let rec = self.offer_for(dev_id, id).ok_or_else(ApiError::not_found)?;
         let meta = tokio::fs::metadata(&rec.path)
             .await
             .map_err(|_| ApiError::new(StatusCode::GONE, "file_gone"))?;

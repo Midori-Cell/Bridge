@@ -154,34 +154,45 @@ impl Bridge {
         self.shared.revoke(device_id)
     }
 
-    /// Send a text note to every paired phone.
-    pub fn send_text(&self, text: &str) -> std::result::Result<Note, NoteError> {
-        self.shared.add_text_note("pc", text, None)
+    /// Send a text note to one paired phone. Every phone has its own conversation; no other phone sees it.
+    pub fn send_text(&self, device_id: &str, text: &str) -> std::result::Result<Note, NoteError> {
+        self.shared.add_text_note(device_id, "pc", text, None)
     }
 
-    /// Like `send_text`, as an answer to the message with id `reply_to`.
-    pub fn send_text_reply(&self, text: &str, reply_to: Option<&str>) -> std::result::Result<Note, NoteError> {
-        self.shared.add_text_note("pc", text, reply_to)
+    /// Like `send_text`, as an answer to the message with id `reply_to` (from the same conversation).
+    pub fn send_text_reply(&self, device_id: &str, text: &str, reply_to: Option<&str>) -> std::result::Result<Note, NoteError> {
+        self.shared.add_text_note(device_id, "pc", text, reply_to)
     }
 
-    /// Delete a message of the phone conversation (by its `mid`). Phones drop it too.
-    /// A file received from a phone is deleted from the inbox; a file offered to phones is withdrawn.
-    pub fn delete_note(&self, mid: &str) -> bool {
-        self.shared.delete_note(mid)
+    /// Delete a message of the conversation with a phone (by its `mid`). The phone drops it too.
+    /// A file received from the phone is deleted from the inbox; a file offered to it is withdrawn.
+    pub fn delete_note(&self, device_id: &str, mid: &str) -> bool {
+        self.shared.delete_note(device_id, mid)
     }
 
-    /// Offer a local file to the phones. Computes its checksum first (can take a while for big files).
-    pub async fn send_file(&self, path: impl AsRef<Path>) -> Result<FileRef> {
-        self.shared.make_offer(path.as_ref()).await
+    /// Offer a local file to one phone. Computes its checksum first (can take a while for big files).
+    pub async fn send_file(&self, device_id: &str, path: impl AsRef<Path>) -> Result<FileRef> {
+        self.shared.make_offer(device_id, path.as_ref()).await
     }
 
-    /// Most recent notes, oldest first.
-    pub fn notes(&self, limit: usize) -> Vec<Note> {
-        self.shared.notes_since(None, limit)
+    /// Most recent notes of the conversation with one phone, oldest first.
+    pub fn notes(&self, device_id: &str, limit: usize) -> Vec<Note> {
+        self.shared.notes_since(device_id, None, limit)
     }
 
-    pub fn clear_history(&self) {
-        self.shared.clear_notes();
+    /// Clear the conversation with one phone completely (chat and list); the other phones keep theirs.
+    pub fn clear_history(&self, device_id: &str) {
+        self.shared.clear_notes(device_id, Clear::Both);
+    }
+
+    /// Clear only the chat with one phone. The list "Notes and files" keeps its entries.
+    pub fn clear_chat(&self, device_id: &str) {
+        self.shared.clear_notes(device_id, Clear::Chat);
+    }
+
+    /// Clear only the list "Notes and files" of one phone. The chat keeps its messages.
+    pub fn clear_list(&self, device_id: &str) {
+        self.shared.clear_notes(device_id, Clear::List);
     }
 
     pub fn transfers(&self) -> Vec<TransferInfo> {
@@ -195,6 +206,15 @@ impl Bridge {
 
     pub fn set_auto_accept_files(&self, on: bool) {
         self.shared.set_auto_accept_files(on);
+    }
+
+    /// After how many seconds a file offered to another PC is withdrawn when nobody accepts it (0: never).
+    pub fn offer_timeout_secs(&self) -> u32 {
+        self.shared.offer_timeout_secs()
+    }
+
+    pub fn set_offer_timeout_secs(&self, secs: u32) {
+        self.shared.set_offer_timeout_secs(secs);
     }
 
     /// Accept a file another device wants to send (a transfer in state `Offered`).
@@ -324,8 +344,17 @@ impl Bridge {
         self.shared.peer_notes(peer_id, limit)
     }
 
+    /// Clear the conversation with one paired PC completely (chat and list).
     pub fn clear_peer_notes(&self, peer_id: &str) {
-        self.shared.clear_peer_notes(peer_id);
+        self.shared.clear_peer_notes(peer_id, Clear::Both);
+    }
+
+    pub fn clear_peer_chat(&self, peer_id: &str) {
+        self.shared.clear_peer_notes(peer_id, Clear::Chat);
+    }
+
+    pub fn clear_peer_list(&self, peer_id: &str) {
+        self.shared.clear_peer_notes(peer_id, Clear::List);
     }
 }
 
