@@ -455,6 +455,12 @@ impl App {
             });
         });
         widgets::footnote(ui, "This is how other devices recognize this PC. A phone or PC that was paired will refuse to talk to anything with a different fingerprint.");
+
+        widgets::section(ui, "ABOUT");
+        widgets::grouped(ui, |g| {
+            detail(g, "Version", env!("CARGO_PKG_VERSION"));
+        });
+        widgets::footnote(ui, "Bridge never goes online by itself. To see whether this is the newest version, compare it with the latest release on the project's GitHub page.");
     }
 }
 

@@ -11,8 +11,10 @@ mod common;
 mod hub;
 mod icon;
 mod icons;
+mod minimize;
 mod pages;
 mod shortcut;
+mod single;
 mod theme;
 mod tray;
 mod widgets;
@@ -62,6 +64,9 @@ fn main() {
     let args = Args::parse();
     tracing_subscriber::fmt().with_env_filter("warn").with_target(false).init();
 
+    // A second start only brings the running Bridge to the front (and exits).
+    let single = single::claim(single::control_port(args.peer_port));
+
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap_or_else(|e| fatal(&format!("Could not start: {e}")));
 
     let data_dir = args.data_dir.unwrap_or_else(default_data_dir);
@@ -84,6 +89,9 @@ fn main() {
 
     let hub = hub::Hub::new(bridge, rt.handle().clone());
     hub.spawn_event_task();
+    if let Some(listener) = single {
+        single::serve(listener, hub.clone());
+    }
 
     let icon = egui::IconData { rgba: icon::rgba(64), width: 64, height: 64 };
     let options = eframe::NativeOptions {

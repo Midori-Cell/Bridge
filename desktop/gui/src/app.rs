@@ -79,6 +79,7 @@ pub struct Conv {
 
 pub struct App {
     pub hub: Arc<Hub>,
+    min_watch: crate::minimize::Watch,
     pub(crate) keep: tray::Keep,
     pub sel: Sel,
     pub search: String,
@@ -108,6 +109,7 @@ impl App {
         let sheet = ask_folder.then(|| Sheet::ChooseFolder { path: hub.bridge.inbox_dir(), first_run: true });
         App {
             hub,
+            min_watch: Default::default(),
             keep,
             sel: Sel::Auto,
             search: String::new(),
@@ -205,8 +207,27 @@ impl App {
     }
 }
 
+impl App {
+    /// Minimize to the Dock (macOS), and watch for the window coming back (see `minimize.rs`).
+    fn minimize(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        self.min_watch.minimized_by_us(Instant::now());
+        ctx.request_repaint_after(Duration::from_millis(300));
+    }
+}
+
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Runs even while the window is minimized: notice when it has been restored from the Dock.
+        if self.min_watch.waiting() {
+            let (minimized, focused) = ctx.input(|i| (i.viewport().minimized, i.viewport().focused));
+            if self.min_watch.restored(Instant::now(), minimized, focused) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.request_repaint();
+            } else if self.min_watch.waiting() {
+                ctx.request_repaint_after(Duration::from_millis(300));
+            }
+        }
         // The close button only hides the window when a tray icon can bring it back.
         if ctx.input(|i| i.viewport().close_requested()) {
             let hide = !self.hub.quitting.load(Ordering::SeqCst)
@@ -214,7 +235,14 @@ impl eframe::App for App {
                 && self.hub.settings().keep_in_tray;
             if hide {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                if cfg!(target_os = "macos") {
+                    // A hidden window cannot be brought back by a click on the Dock icon (the system's
+                    // "reopen" request never reaches the program), so it goes to the Dock like the yellow
+                    // button does. The tray icon and the Dock icon both bring it back.
+                    self.minimize(ctx);
+                } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                }
             }
         }
     }
@@ -226,6 +254,8 @@ impl eframe::App for App {
         let data = self.snapshot();
         self.resolve_selection(&data);
         self.handle_drops(&ctx);
+        self.handle_pasted_images(&ctx);
+        self.handle_mac_window_keys(&ctx);
         self.handle_zoom(&ctx);
         self.follow_background_changes(&data);
 
@@ -420,6 +450,47 @@ impl App {
             Sel::Pc(id) => self.hub.send_peer_files(&id, dropped),
             Sel::Phone(_) => self.hub.send_files(dropped),
             _ => self.hub.toast("Open the phone or a PC first, then drop the files.", true),
+        }
+    }
+
+    /// Ctrl+V / Cmd+V with a picture on the clipboard (a screenshot): save it as a file and send it to the
+    /// open conversation, the same as a dropped file.
+    fn handle_pasted_images(&mut self, ctx: &egui::Context) {
+        let images: Vec<_> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| if let egui::Event::PasteImage(img) = e { Some(img.clone()) } else { None })
+                .collect()
+        });
+        for img in images {
+            let target = self.sel.clone();
+            if !matches!(target, Sel::Pc(_) | Sel::Phone(_)) {
+                self.hub.toast("Open the phone or a PC first, then paste the picture.", true);
+                continue;
+            }
+            match self.hub.save_pasted_image(&img) {
+                Ok(path) => match target {
+                    Sel::Pc(id) => self.hub.send_peer_files(&id, vec![path]),
+                    _ => self.hub.send_files(vec![path]),
+                },
+                Err(e) => self.hub.toast(format!("Could not use the pasted picture: {e}"), true),
+            }
+        }
+    }
+
+    /// The Mac shortcuts for the window that the window system does not provide by itself here.
+    fn handle_mac_window_keys(&mut self, ctx: &egui::Context) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let (minimize, close) = ctx.input_mut(|i| {
+            (i.consume_key(egui::Modifiers::COMMAND, egui::Key::M), i.consume_key(egui::Modifiers::COMMAND, egui::Key::W))
+        });
+        if minimize {
+            self.minimize(ctx);
+        }
+        if close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 

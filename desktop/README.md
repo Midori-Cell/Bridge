@@ -40,6 +40,8 @@ name or last message. **Settings** is at the bottom.
 - **Send text:** type in the box and press *Send* (or Ctrl+Enter; the key is a setting). **Clipboard** (phones only) sends
   the text you copied.
 - **Send files:** click **Files**, or drag files onto the window.
+- **Send a screenshot:** copy a picture (for example with the Snipping Tool or Cmd+Shift+Ctrl+4), open a conversation and press
+  Ctrl+V (Cmd+V on a Mac). It is sent as a PNG file.
 - **Reply, copy, delete:** hover a message to see the buttons, or double-click it to reply. Delete removes the message on both devices.
 - **Open a file** by clicking it. Hover it for **Show in folder** and a red **x** to delete it. Programs and scripts
   (`.exe`, `.sh`, `.bat` and so on) are never started from Bridge; clicking them shows their folder instead.
@@ -58,7 +60,9 @@ A PC you unpair is told and removes its side too; a phone notices the next time 
 ## Tray icon and hotkey
 
 - The **tray icon** (right-click) has *Open Bridge*, *Send clipboard to phone* and *Quit*. With *Keep running in the tray*
-  turned on in Settings, closing the window keeps Bridge running.
+  turned on in Settings, closing the window keeps Bridge running (on a Mac the window goes to the Dock, like the yellow
+  button, and a click on the Dock icon brings it back).
+- Only one Bridge runs per computer. Starting it again, for example from the taskbar, brings the running window to the front.
 - The **hotkey** (default Ctrl+Alt+B) sends the text you copied to your phone from anywhere on the desktop.
   *Settings > Send clipboard to phone hotkey* opens a window where you press your own combination: hold as many keys as
   you like, then click *Accept*. *Reset* restores the default. The switch next to it turns the hotkey off.
@@ -68,7 +72,7 @@ A PC you unpair is told and removes its side too; a phone notices the next time 
 
 This PC's name, **highlight color** (seven ready-made colors or your own), the key that sends a message, the hotkey,
 *Visible to other PCs* (switch it off and other PCs stop finding you under Nearby; PCs already paired still work),
-tray behavior, the folder for received files, this PC's addresses and its **certificate fingerprint**. The fingerprint is
+tray behavior, the folder for received files, this PC's addresses and its **certificate fingerprint** and the program **version**. The fingerprint is
 how phones and other PCs recognize this PC; compare it with the one the phone shows if you want to be sure.
 
 ## Where Bridge keeps things

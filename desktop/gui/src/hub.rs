@@ -237,6 +237,27 @@ impl Hub {
         }
     }
 
+    /// Save a pasted picture (a screenshot, say) as a PNG file in the program data folder. The file must stay,
+    /// because the phone or the other PC fetches it from there when it accepts the transfer.
+    pub fn save_pasted_image(&self, img: &egui::ColorImage) -> Result<PathBuf, String> {
+        let dir = self.bridge.data_dir().join("pasted");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let stamp = crate::common::utc_stamp(std::time::SystemTime::now());
+        let mut path = dir.join(format!("Pasted image {stamp}.png"));
+        let mut n = 2;
+        while path.exists() {
+            path = dir.join(format!("Pasted image {stamp} ({n}).png"));
+            n += 1;
+        }
+        let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+        let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), img.size[0] as u32, img.size[1] as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().and_then(|mut w| w.write_image_data(&rgba)).map_err(|e| e.to_string())?;
+        Ok(path)
+    }
+
     /// Show a file picker without blocking the window.
     pub fn pick_and_send_files(self: &Arc<Self>) {
         let me = self.clone();
