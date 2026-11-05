@@ -1,7 +1,7 @@
 # Bridge
 
-Send text and files between your PC, your Android phone and your other PCs, over your home network.
-Everything is encrypted, nothing goes through the internet, and no account is needed.
+Send text and files between your PC, Android phones and your other PCs, over your home network.
+Connections are encrypted, nothing goes through the internet, and no account is needed.
 
 - **PC app** (Windows, macOS, Linux): a window with a chat per device, drag-and-drop files, a tray icon,
   and a global hotkey that sends the clipboard to the phone.
