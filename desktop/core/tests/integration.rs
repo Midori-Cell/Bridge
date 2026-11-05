@@ -532,16 +532,21 @@ async fn aborted_upload_keeps_progress_and_resumes_byte_exact() {
         .await;
     assert!(res.is_err());
 
-    // The server notices the dead connection and keeps what arrived, in order.
+    // The server notices the dead connection and keeps what arrived, in order. It may still be writing the
+    // last part when the first non-zero number shows up, so wait until the number stops changing.
     let mut received = 0usize;
-    for _ in 0..50 {
+    let mut stable = 0;
+    for _ in 0..100 {
         let (_, s) = h.get(&format!("/api/files/{id}"), &ph).await;
-        received = s["received"].as_u64().unwrap() as usize;
-        if received > 0 {
+        let now = s["received"].as_u64().unwrap() as usize;
+        stable = if now > 0 && now == received { stable + 1 } else { 0 };
+        received = now;
+        if stable >= 3 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    assert!(stable >= 3, "the received size never settled ({received})");
     assert!(received > 0 && received <= 2_621_440, "received {received}");
 
     // Resume from whatever the server reports. Result must be identical to the original.
