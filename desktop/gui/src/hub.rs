@@ -27,6 +27,8 @@ pub struct Settings {
     /// (points at normal size). `None`: as wide as the text.
     pub bubble_own: Option<f32>,
     pub bubble_theirs: Option<f32>,
+    /// Times in the chat as 21:14 (true) or 9:14 PM (false).
+    pub time_24h: bool,
     /// Which key sends the message in the text box.
     pub send_key: SendKey,
     /// Height of the chat in points, set by dragging its lower edge. `None`: follows the window.
@@ -91,7 +93,7 @@ impl Default for Settings {
     fn default() -> Self {
         // A tray icon is dependable on Windows and macOS. On Linux it depends on the desktop
         // (GNOME shows none without an extension), so closing quits there until the user opts in.
-        Self { keep_in_tray: !cfg!(target_os = "linux"), copy_incoming_text: false, zoom: 1.0, chat_zoom: 1.0, bubble_own: None, bubble_theirs: None, send_key: SendKey::default(), chat_height: None, inbox_dir: None, hotkey_enabled: true, hotkey: Default::default(), inbox_confirmed: false, custom_accent: [0x2E, 0xA0, 0x6B], accent: crate::theme::Accent::default() }
+        Self { keep_in_tray: !cfg!(target_os = "linux"), copy_incoming_text: false, zoom: 1.0, chat_zoom: 1.0, bubble_own: None, bubble_theirs: None, time_24h: true, send_key: SendKey::default(), chat_height: None, inbox_dir: None, hotkey_enabled: true, hotkey: Default::default(), inbox_confirmed: false, custom_accent: [0x2E, 0xA0, 0x6B], accent: crate::theme::Accent::default() }
     }
 }
 

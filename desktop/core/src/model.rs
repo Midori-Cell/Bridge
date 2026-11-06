@@ -149,13 +149,15 @@ pub enum Clear {
 
 impl Clear {
     /// Mark every note picked by `mine` as cleared from the chosen view(s), take out the ones that are
-    /// now cleared from both, and return those.
+    /// now cleared from everywhere they are shown, and return those. The list shows files only, so a
+    /// text message is gone as soon as it is cleared from the chat.
     pub(crate) fn apply(self, notes: &mut Vec<Note>, mine: impl Fn(&Note) -> bool) -> Vec<Note> {
         for n in notes.iter_mut().filter(|n| mine(n)) {
             n.chat_hidden |= self != Clear::List;
             n.list_hidden |= self != Clear::Chat;
         }
-        let (gone, keep): (Vec<Note>, Vec<Note>) = std::mem::take(notes).into_iter().partition(|n| n.chat_hidden && n.list_hidden);
+        let (gone, keep): (Vec<Note>, Vec<Note>) =
+            std::mem::take(notes).into_iter().partition(|n| n.chat_hidden && (n.list_hidden || n.file.is_none()));
         *notes = keep;
         gone
     }

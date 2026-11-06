@@ -115,7 +115,7 @@ pub fn history(ui: &mut Ui, notes: &[Note]) -> Option<HistoryAction> {
     let now = now_secs();
     let mut action = None;
     if notes.is_empty() {
-        widgets::grouped(ui, |g| g.row(|ui| widgets::footnote(ui, "Nothing here yet.")));
+        widgets::grouped(ui, |g| g.row(|ui| widgets::footnote(ui, "No files yet.")));
         return None;
     }
     widgets::grouped(ui, |g| {

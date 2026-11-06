@@ -53,6 +53,11 @@ class Store(private val context: Context) {
         get() = runCatching { ThemeMode.valueOf(prefs.getString("theme", "") ?: "") }.getOrDefault(ThemeMode.System)
         set(v) = prefs.edit().putString("theme", v.name).apply()
 
+    /** Times in the chat as 21:14 (true) or 9:14 PM (false). Until the user chooses, the phone's own clock setting. */
+    var time24: Boolean
+        get() = if (prefs.contains("time24")) prefs.getBoolean("time24", true) else android.text.format.DateFormat.is24HourFormat(context)
+        set(v) = prefs.edit().putBoolean("time24", v).apply()
+
     var askedNotifications: Boolean
         get() = prefs.getBoolean("asked_notifications", false)
         set(v) = prefs.edit().putBoolean("asked_notifications", v).apply()

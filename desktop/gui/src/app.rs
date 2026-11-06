@@ -79,11 +79,11 @@ pub struct Conv {
     pub name: String,
     /// What the chat shows (messages not cleared from the chat).
     pub notes: Vec<Note>,
-    /// What the list "Notes and files" shows (entries not cleared from the list).
+    /// What the list "Files" shows (the files not cleared from the list).
     pub list: Vec<Note>,
 }
 
-/// The messages of a conversation as the chat shows them, and as the list "Notes and files" shows them.
+/// The messages of a conversation as the chat shows them, and as the list "Files" shows them.
 fn split_views(all: Option<&Vec<Note>>) -> (Vec<Note>, Vec<Note>) {
     let all = all.map(Vec::as_slice).unwrap_or_default();
     (all.iter().filter(|n| !n.chat_hidden).cloned().collect(), all.iter().filter(|n| !n.list_hidden).cloned().collect())

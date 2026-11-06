@@ -7,6 +7,7 @@
 
 mod app;
 mod chat;
+mod clock;
 mod common;
 mod hub;
 mod icon;

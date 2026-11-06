@@ -6,7 +6,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,13 +17,14 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -41,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -55,10 +56,14 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** Takes whatever scrolling the chat cannot use, so the page behind it does not move when the chat reaches its end. */
 private val keepScrollInChat = object : NestedScrollConnection {
@@ -77,7 +83,7 @@ private val keepScrollInChat = object : NestedScrollConnection {
 /** Mockup N: the connection, a small chat with the PC, and the most recent items. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HomeScreen(onChange: () -> Unit) {
+fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
     val p = LocalPalette.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -86,6 +92,7 @@ fun HomeScreen(onChange: () -> Unit) {
     val notes by Bridge.notes.collectAsState()
     val transfers by Bridge.transfers.collectAsState()
     val saved by Bridge.saved.collectAsState()
+    val time24 by Bridge.time24.collectAsState()
     var text by rememberSaveable { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<Note?>(null) }
     var sending by remember { mutableStateOf(false) }
@@ -118,7 +125,15 @@ fun HomeScreen(onChange: () -> Unit) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Txt("Notes", Modifier.padding(start = 4.dp, top = 8.dp), size = 32.sp, weight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Txt("Notes", Modifier.weight(1f).padding(start = 4.dp), size = 32.sp, weight = FontWeight.Bold)
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).background(p.tint).clickable(onClickLabel = "Pair a device", role = Role.Button) { onPair() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icn(R.drawable.ic_plus, Color.White, 22.dp)
+            }
+        }
 
         // connection
         Row(
@@ -163,19 +178,27 @@ fun HomeScreen(onChange: () -> Unit) {
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    items(notes.asReversed(), key = { it.id }) { note ->
-                        Bubble(
-                            note = note,
-                            state = fileState(note, transfers, saved),
-                            onTap = { fileTap(context, note, current, saved) },
-                            onCopy = { copyText(context, note.text.orEmpty()) },
-                            onReply = { replyTo = note },
-                            onDelete = {
-                                scope.launch {
-                                    Bridge.deleteNote(note)?.let { toast(context, it) }
-                                }
-                            },
-                        )
+                    val shown = notes.asReversed()
+                    itemsIndexed(shown, key = { _, n -> n.id }) { i, note ->
+                        // the list runs newest first, so the next item is the older message
+                        val older = shown.getOrNull(i + 1)
+                        val firstOfDay = note.ts > 0 && (older == null || older.ts <= 0 || dayOf(older.ts) != dayOf(note.ts))
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (firstOfDay) DayLine(dayLabel(dayOf(note.ts)))
+                            Bubble(
+                                note = note,
+                                state = fileState(note, transfers, saved),
+                                time = if (note.ts > 0) timeText(note.ts, time24) else "",
+                                onTap = { fileTap(context, note, current, saved) },
+                                onCopy = { copyText(context, note.text.orEmpty()) },
+                                onReply = { replyTo = note },
+                                onDelete = {
+                                    scope.launch {
+                                        Bridge.deleteNote(note)?.let { toast(context, it) }
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
                 // soft edges where messages are cut off, as on the PC: the chat goes on there
@@ -235,10 +258,10 @@ fun HomeScreen(onChange: () -> Unit) {
             }
         }
 
-        SectionLabel("RECENT")
+        SectionLabel("FILES")
         Panel {
-            val recent = notes.takeLast(3).asReversed()
-            if (recent.isEmpty()) Txt("Messages and files you exchange with ${current.name} show up here.", Modifier.padding(16.dp), color = p.label2, size = 14.sp)
+            val recent = notes.filter { it.isFile }.takeLast(3).asReversed()
+            if (recent.isEmpty()) Txt("Files you exchange with ${current.name} show up here.", Modifier.padding(16.dp), color = p.label2, size = 14.sp)
             recent.forEachIndexed { i, note ->
                 if (i > 0) Sep()
                 RecentRow(note, current, fileState(note, transfers, saved), onTap = { fileTap(context, note, current, saved) }, onCopy = { copyText(context, note.text.orEmpty()) })
@@ -250,7 +273,7 @@ fun HomeScreen(onChange: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(note: Note, state: FileState, onTap: () -> Unit, onCopy: () -> Unit, onReply: () -> Unit, onDelete: () -> Unit) {
+private fun Bubble(note: Note, state: FileState, time: String, onTap: () -> Unit, onCopy: () -> Unit, onReply: () -> Unit, onDelete: () -> Unit) {
     val p = LocalPalette.current
     val mine = !note.fromPc
     val background = if (mine) p.tint else p.bubble
@@ -258,11 +281,20 @@ private fun Bubble(note: Note, state: FileState, onTap: () -> Unit, onCopy: () -
     val quiet = if (mine) Color.White.copy(alpha = 0.85f) else p.label2
     val shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = if (mine) 18.dp else 6.dp, bottomEnd = if (mine) 6.dp else 18.dp)
     var menu by remember { mutableStateOf(false) }
+    // The menu opens where the finger is, so it is always on screen, even for a message that is longer than the chat.
+    var menuAt by remember { mutableStateOf(IntOffset.Zero) }
+    val haptic = LocalHapticFeedback.current
+    val openMenu = rememberUpdatedState<(Offset) -> Unit> { at ->
+        menuAt = IntOffset(at.x.roundToInt(), at.y.roundToInt())
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        menu = true
+    }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
         Box {
             Column(
                 Modifier.widthIn(max = 270.dp).clip(shape).background(background)
-                    .combinedClickable(onClick = { if (note.isFile) onTap() }, onLongClick = { menu = true })
+                    .longPressAnywhere(openMenu)
+                    .then(if (note.isFile) Modifier.clickable { onTap() } else Modifier)
                     .padding(horizontal = 14.dp, vertical = 7.dp),
             ) {
                 note.reply?.let { quote ->
@@ -285,19 +317,36 @@ private fun Bubble(note: Note, state: FileState, onTap: () -> Unit, onCopy: () -
                 } else {
                     Text(linkify(note.text.orEmpty(), if (mine) Color.White else p.tintText), color = foreground, fontSize = 16.sp)
                 }
-            }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.background(p.card)) {
-                if (note.isFile) {
-                    state.action?.let { action ->
-                        MenuRow(action, R.drawable.ic_file, p.label) { menu = false; onTap() }
-                    }
-                } else {
-                    MenuRow("Copy", R.drawable.ic_copy, p.label) { menu = false; onCopy() }
-                    MenuRow("Reply", R.drawable.ic_reply, p.label) { menu = false; onReply() }
+                // small, and a little lower and further right than the text, into the padding of the bubble
+                if (time.isNotEmpty()) {
+                    Txt(time, Modifier.align(Alignment.End).offset(x = 3.dp, y = 2.dp), color = quiet, size = 11.sp)
                 }
-                MenuRow("Delete", R.drawable.ic_trash, p.red) { menu = false; onDelete() }
+            }
+            Box(Modifier.offset { menuAt }) {
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.background(p.card)) {
+                    if (note.isFile) {
+                        state.action?.let { action ->
+                            MenuRow(action, R.drawable.ic_file, p.label) { menu = false; onTap() }
+                        }
+                    } else {
+                        MenuRow("Copy", R.drawable.ic_copy, p.label) { menu = false; onCopy() }
+                        MenuRow("Reply", R.drawable.ic_reply, p.label) { menu = false; onReply() }
+                    }
+                    MenuRow("Delete", R.drawable.ic_trash, p.red) { menu = false; onDelete() }
+                }
             }
         }
+    }
+}
+
+/** A thin line across the chat with the day in the middle. */
+@Composable
+private fun DayLine(label: String) {
+    val p = LocalPalette.current
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(Modifier.weight(1f).height(1.dp).background(p.outline.copy(alpha = 0.45f)))
+        Txt(label, color = p.label2, size = 12.sp, weight = FontWeight.Medium)
+        Box(Modifier.weight(1f).height(1.dp).background(p.outline.copy(alpha = 0.45f)))
     }
 }
 

@@ -83,6 +83,9 @@ object Bridge {
     private val _themeMode = MutableStateFlow(ThemeMode.System)
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
 
+    private val _time24 = MutableStateFlow(true)
+    val time24: StateFlow<Boolean> = _time24.asStateFlow()
+
     /** A file the PC offers that nobody has answered yet. */
     data class Offer(val file: FileRef, val pc: Pc)
 
@@ -104,6 +107,7 @@ object Bridge {
         store = Store(application)
         _saved.value = store.saved()
         _themeMode.value = store.themeMode
+        _time24.value = store.time24
         reload()
     }
 
@@ -128,6 +132,11 @@ object Bridge {
     fun setThemeMode(mode: ThemeMode) {
         store.themeMode = mode
         _themeMode.value = mode
+    }
+
+    fun setTime24(value: Boolean) {
+        store.time24 = value
+        _time24.value = value
     }
 
     var askedNotifications: Boolean

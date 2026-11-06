@@ -47,6 +47,7 @@ fun SettingsScreen(onPair: () -> Unit) {
     var editing by remember { mutableStateOf(false) }
     var leaving by remember { mutableStateOf<Pc?>(null) }
     val mode by Bridge.themeMode.collectAsState()
+    val time24 by Bridge.time24.collectAsState()
     val context = LocalContext.current
     val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
 
@@ -91,6 +92,28 @@ fun SettingsScreen(onPair: () -> Unit) {
             }
         }
         Footnote("System follows the phone's own dark mode setting.")
+        Panel {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Txt("Time format", Modifier.weight(1f))
+                listOf(true to "24-hour", false to "12-hour").forEach { (value, label) ->
+                    val selected = value == time24
+                    Box(
+                        Modifier.height(36.dp).clip(RoundedCornerShape(18.dp))
+                            .background(if (selected) p.tint else p.field)
+                            .clickable(role = Role.RadioButton) { Bridge.setTime24(value) }
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Txt(label, color = if (selected) Color.White else p.label, size = 14.sp, weight = if (selected) FontWeight.SemiBold else null)
+                    }
+                }
+            }
+        }
+        Footnote("How the time under each message is written, for example 21:14 or 9:14 PM.")
 
         SectionLabel("PAIRED PCS")
         Panel {
@@ -122,7 +145,7 @@ fun SettingsScreen(onPair: () -> Unit) {
         Panel {
             Txt("Files from a PC are saved in Downloads/Bridge.", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
             Sep()
-            Txt("Everything stays on your network and is encrypted. This phone only talks to a PC whose certificate it was paired with.", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
+            Txt("Everything stays on your network. Connections are encrypted. This phone only talks to a PC whose certificate it was paired with.", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
             Sep()
             Txt("Version $version", Modifier.padding(horizontal = 16.dp, vertical = 14.dp), color = p.label2)
         }

@@ -50,9 +50,9 @@ impl App {
 
     // ------------------------------------------------------------ conversation
 
-    /// The whole conversation page scrolls: device card, chat, transfers, then notes and files.
+    /// The whole conversation page scrolls: device card, chat, transfers, then the files.
     /// The chat takes the height of the window minus a strip at the bottom, so the transfers (which
-    /// may need an answer) and the top of "Notes and files" stay visible without scrolling.
+    /// may need an answer) and the top of the file list stay visible without scrolling.
     pub(crate) fn conversation_page(&mut self, ui: &mut Ui, c: &Conv, d: &Data) {
         const PEEK: f32 = 118.0;
         const AUTO_MAX: f32 = 520.0;
@@ -78,7 +78,7 @@ impl App {
                 ui.label(RichText::new(format!("CHAT WITH {}", c.name.to_uppercase())).small().strong().color(palette(ui).label2));
                 widgets::trailing(ui, |ui| {
                     ui.add_space(4.0);
-                    if widgets::plain(ui, "Clear chat").on_hover_text("Empty the chat on this PC. \"Notes and files\" below keeps its entries, and the other side keeps its copy.").clicked() {
+                    if widgets::plain(ui, "Clear chat").on_hover_text("Empty the chat on this PC. The file list below keeps its files, and the other side keeps its copy.").clicked() {
                         if c.phone {
                             self.hub.bridge.clear_chat(&c.id);
                         } else {
@@ -104,7 +104,7 @@ impl App {
                 self.jump_after = None;
             }
             let (text, hint) = if c.phone { (&mut self.phone_text, "Type or paste a note for the phone") } else { (&mut self.pc_text, "Type or paste a message") };
-            let out = chat::show(ui, height, Chat { id: &c.id, jump_to_end, notes: &c.notes, text, hint, clipboard: c.phone, send_key: self.hub.settings().send_key, reply, zoom: self.chat_zoom, widths: self.bubble_w });
+            let out = chat::show(ui, height, Chat { id: &c.id, jump_to_end, notes: &c.notes, text, hint, clipboard: c.phone, send_key: self.hub.settings().send_key, reply, zoom: self.chat_zoom, widths: self.bubble_w, time_24h: self.hub.settings().time_24h });
             self.chat_rect = Some(out.rect);
             if let Some((own, w)) = out.width {
                 if own {
@@ -247,10 +247,10 @@ impl App {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            ui.label(RichText::new("NOTES AND FILES").small().strong().color(palette(ui).label2));
+            ui.label(RichText::new("FILES").small().strong().color(palette(ui).label2));
             widgets::trailing(ui, |ui| {
                 ui.add_space(4.0);
-if widgets::plain(ui, "Clear list").on_hover_text("Empty this list on this PC. The chat above keeps its messages, and the other side keeps its copy.").clicked() {
+if widgets::plain(ui, "Clear list").on_hover_text("Empty the file list on this PC. The chat above keeps its messages, and the other side keeps its copy.").clicked() {
                     if c.phone {
                         self.hub.bridge.clear_list(&c.id);
                     } else {
@@ -262,7 +262,8 @@ if widgets::plain(ui, "Clear list").on_hover_text("Empty this list on this PC. T
                 }
             });
         });
-        match common::history(ui, &c.list) {
+        let files: Vec<_> = c.list.iter().filter(|n| n.kind == bridge_core::NoteKind::File).cloned().collect();
+        match common::history(ui, &files) {
             Some(HistoryAction::Copy(t)) => ui.ctx().copy_text(t),
             Some(HistoryAction::Open(f)) => self.hub.open_file(&f),
             Some(HistoryAction::ShowFolder(f)) => self.hub.show_file(&f),
@@ -411,6 +412,22 @@ if widgets::plain(ui, "Clear list").on_hover_text("Empty this list on this PC. T
             });
         });
         widgets::footnote(ui, "Drag a message in the chat to the left or right to set the width of all your messages, or of all incoming ones. Reset makes every message as wide as its text again.");
+
+        widgets::grouped(ui, |g| {
+            g.row(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Time format");
+                    widgets::trailing(ui, |ui| {
+                        let label = |h24: bool| if h24 { "24-hour (21:14)" } else { "12-hour (9:14 PM)" };
+                        egui::ComboBox::from_id_salt("time_format").selected_text(label(s.time_24h)).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut s.time_24h, true, label(true));
+                            ui.selectable_value(&mut s.time_24h, false, label(false));
+                        });
+                    });
+                });
+            });
+        });
+        widgets::footnote(ui, "How the time under each message is written.");
 
         widgets::section(ui, "BEHAVIOR");
         let tray_ok = self.hub.tray_ok.load(Ordering::SeqCst);

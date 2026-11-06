@@ -8,6 +8,8 @@ import android.widget.Toast
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -25,7 +27,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.runtime.State
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -46,7 +53,13 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.DateFormat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Date
+import java.util.Locale
 
 @Composable
 fun Txt(
@@ -176,6 +189,27 @@ fun whenText(ts: Double): String {
     }
 }
 
+/** The day a message was sent, in the phone's time zone. */
+fun dayOf(ts: Double): LocalDate = Instant.ofEpochMilli((ts * 1000).toLong()).atZone(ZoneId.systemDefault()).toLocalDate()
+
+/** "21:14" or, in 12-hour format, "9:14 PM". */
+fun timeText(ts: Double, h24: Boolean): String {
+    val t = Instant.ofEpochMilli((ts * 1000).toLong()).atZone(ZoneId.systemDefault())
+    return t.format(DateTimeFormatter.ofPattern(if (h24) "HH:mm" else "h:mm a", Locale.ENGLISH))
+}
+
+/** The text of the line that starts a day: Today, Yesterday, the weekday for the rest of the last week, then the date. */
+fun dayLabel(day: LocalDate, today: LocalDate = LocalDate.now()): String {
+    val back = ChronoUnit.DAYS.between(day, today)
+    return when {
+        back == 0L -> "Today"
+        back == 1L -> "Yesterday"
+        back in 2..6 -> day.format(DateTimeFormatter.ofPattern("EEEE", Locale.ENGLISH))
+        day.year == today.year -> day.format(DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH))
+        else -> day.format(DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH))
+    }
+}
+
 fun copyText(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText("Bridge", text))
@@ -259,6 +293,40 @@ fun findLinks(text: String): List<LinkSpan> {
         i++
     }
     return out
+}
+
+/**
+ * A long press that works on the whole element, wherever the finger is: also on a long text that is cut off by the
+ * chat, and also on a web address in the text (which otherwise takes the touch for itself). It only watches the touch
+ * and does not take it, so scrolling and tapping a link keep working. When the time is up it calls [onLongPress]
+ * with the position inside the element and swallows the rest of the touch, so lifting the finger does not open a link.
+ */
+fun Modifier.longPressAnywhere(onLongPress: State<(Offset) -> Unit>): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        val slop = viewConfiguration.touchSlop
+        val held = try {
+            withTimeout(viewConfiguration.longPressTimeoutMillis) {
+                var still = true
+                while (still) {
+                    val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id }
+                    still = change != null && change.pressed && (change.position - down.position).getDistance() <= slop
+                }
+            }
+            false // lifted or moved (scrolling) before the time was up
+        } catch (e: PointerEventTimeoutCancellationException) {
+            true
+        }
+        if (held) {
+            onLongPress.value(down.position)
+            var touching = true
+            while (touching) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                event.changes.forEach { it.consume() }
+                touching = event.changes.any { it.pressed }
+            }
+        }
+    }
 }
 
 /** The message text with its web addresses underlined; tapping one opens it in the browser. */

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 bridge-core = { path = "../core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 eframe = "0.37"
 egui = "0.37"
 clap = { version = "4", features = ["derive"] }
@@ -43,7 +44,7 @@ section = "net"
 priority = "optional"
 depends = "$auto, libayatana-appindicator3-1 | libappindicator3-1, libxdo3"
 extended-description = """\
-Everything is encrypted and nothing goes through the internet. The program has a window with a chat per device, \
+Connections are encrypted and nothing goes through the internet. The program has a window with a chat per device, \
 drag-and-drop for files, a tray icon, and a global hotkey that sends the clipboard to the phone. \
 Pair an Android phone by scanning a QR code."""
 assets = [

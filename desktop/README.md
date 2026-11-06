@@ -47,10 +47,12 @@ name or last message. **Settings** is at the bottom.
   (`.exe`, `.sh`, `.bat` and so on) are never started from Bridge; clicking them shows their folder instead.
 - **Links:** web addresses in messages are underlined; click one to open it in your browser.
 - **Chat height:** drag the small grip under the chat. Double-click it to make the chat follow the window again.
-- **Message width:** drag a message to the left or right. All your messages (or, if you drag an incoming one, all incoming
-  messages) get that width. *Settings > Message width > Reset* makes every message as wide as its text again.
-- **Notes and files**, below the chat, is the history with *Copy*, *Open* and *Show folder* for every item.
-- **Clear chat** (above the chat) and **Clear list** (above Notes and files) work independently: clearing one leaves the
+- **Mark and copy text:** drag over the text of a message to mark it, then press Ctrl+C (Cmd+C on a Mac).
+- **Message width:** hold Ctrl (Cmd on a Mac) and drag a message to the left or right. All your messages (or, if you drag
+  an incoming one, all incoming messages) get that width. Without the key a drag marks text instead. *Settings > Message width > Reset* makes every message as wide as its text again.
+- **Times and days:** every message shows its time at the bottom right (hover for the full date), and a line with *Today*, *Yesterday*, the weekday or the date starts each day. Settings > Time format switches between 24-hour and 12-hour.
+- **Files**, below the chat, lists the files you sent and received with *Open* and *Show folder* (texts are only in the chat).
+- **Clear chat** (above the chat) and **Clear list** (above Files) work independently: clearing one leaves the
   other as it is. A message disappears from this PC for good once it is cleared from both. Only this PC is affected;
   the other device keeps its copy. Files you received stay in your inbox folder.
 - **Zoom:** Ctrl + mouse wheel zooms the whole window, or Ctrl +/- and Ctrl 0, from 60 to 200 %. With the pointer on the chat,

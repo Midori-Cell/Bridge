@@ -1417,7 +1417,7 @@ async fn conversations_survive_a_restart_per_phone() {
 
 // ---------------------------------------------------------------- two separate Clear buttons
 
-/// (in the chat, in the list "Notes and files") texts of one phone's conversation as the PC window shows them
+/// (in the chat, in the list "Files") texts of one phone's conversation as the PC window shows them
 fn views(h: &H, dev: &str) -> (Vec<String>, Vec<String>) {
     let all = h.b().notes(dev, 100);
     let t = |keep: &dyn Fn(&bridge_core::Note) -> bool| all.iter().filter(|n| keep(n)).map(|n| n.text.clone().unwrap_or_default()).collect();
@@ -1425,41 +1425,48 @@ fn views(h: &H, dev: &str) -> (Vec<String>, Vec<String>) {
 }
 
 #[tokio::test]
-async fn clearing_the_chat_keeps_the_list_and_the_other_way_round() {
+async fn clearing_the_chat_removes_texts_but_files_stay_in_the_list_until_that_is_cleared_too() {
     let h = H::new().await;
     let a = h.pair_as("Pixel").await;
     let b = h.pair_as("Galaxy").await;
+    let path = h.tmp.path().join("doc.txt");
+    std::fs::write(&path, b"content").unwrap();
     h.b().send_text(&a.id, "one").unwrap();
+    h.b().send_file(&a.id, &path).await.unwrap();
     h.b().send_text(&a.id, "two").unwrap();
     h.b().send_text(&b.id, "other phone").unwrap();
 
+    // The list "Files" shows files only; texts are only in the chat.
+    let (chat, list) = views(&h, &a.id);
+    assert_eq!((chat.len(), list.len()), (3, 3));
     h.b().clear_chat(&a.id);
-    assert_eq!(views(&h, &a.id), (vec![], vec!["one".into(), "two".into()]));
-    // messages that come in later show up in both views again
+    // texts are removed from this PC, the file is still in the list
+    let all = h.b().notes(&a.id, 100);
+    assert_eq!(all.len(), 1);
+    assert!(all[0].file.is_some() && all[0].chat_hidden && !all[0].list_hidden);
+    // messages that come in later show up in the chat again
     h.b().send_text(&a.id, "three").unwrap();
-    assert_eq!(views(&h, &a.id), (vec!["three".into()], vec!["one".into(), "two".into(), "three".into()]));
+    assert_eq!(views(&h, &a.id).0, vec!["three".to_string()]);
 
+    // Clear list touches files only
     h.b().clear_list(&a.id);
-    assert_eq!(views(&h, &a.id), (vec!["three".into()], vec![]));
-    h.b().send_text(&a.id, "four").unwrap();
-    assert_eq!(views(&h, &a.id), (vec!["three".into(), "four".into()], vec!["four".into()]));
+    let all = h.b().notes(&a.id, 100);
+    assert_eq!(all.len(), 1, "the file was cleared from both views and is gone, the text stays in the chat");
+    assert_eq!(all[0].text.as_deref(), Some("three"));
 
-    // the other phone is untouched; "one" and "two" were cleared from both views, so this PC dropped them
+    // the other phone is untouched
     assert_eq!(views(&h, &b.id), (vec!["other phone".into()], vec!["other phone".into()]));
-    assert_eq!(texts(&h.notes(&a).await), ["three", "four"]);
 }
 
 #[tokio::test]
-async fn a_message_cleared_from_both_views_is_gone_for_good_and_it_survives_a_restart() {
+async fn a_cleared_text_is_gone_for_good_and_it_survives_a_restart() {
     let mut h = H::new().await;
     let a = h.pair_as("Pixel").await;
     h.b().send_text(&a.id, "one").unwrap();
     h.b().send_text(&a.id, "two").unwrap();
     h.b().clear_chat(&a.id);
     h.restart().await;
-    assert_eq!(views(&h, &a.id), (vec![], vec!["one".into(), "two".into()]), "the state is saved");
-    h.b().clear_list(&a.id);
-    assert!(h.b().notes(&a.id, 100).is_empty(), "cleared from both views: removed from this PC");
+    assert!(h.b().notes(&a.id, 100).is_empty(), "cleared from the chat: removed from this PC");
     // the phone keeps its copy until the history of the conversation is cleared completely
     h.b().send_text(&a.id, "after").unwrap();
     h.b().clear_history(&a.id);

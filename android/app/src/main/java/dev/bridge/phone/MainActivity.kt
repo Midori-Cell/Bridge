@@ -125,7 +125,7 @@ fun AppRoot() {
     Column(Modifier.fillMaxSize().background(p.bg).imePadding()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (tab) {
-                Tab.Notes -> HomeScreen(onChange = { choosing = true })
+                Tab.Notes -> HomeScreen(onChange = { choosing = true }, onPair = { pairing = true })
                 Tab.Files -> FilesScreen()
                 Tab.Settings -> SettingsScreen(onPair = { pairing = true })
             }

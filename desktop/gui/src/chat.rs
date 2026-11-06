@@ -39,6 +39,8 @@ pub struct Chat<'a> {
     /// Width of all messages of mine / of the other side, in points at normal size. `None`: as wide as the text.
     /// Set by dragging a message sideways.
     pub widths: Widths,
+    /// Show times as 21:14 (true) or 9:14 PM (false).
+    pub time_24h: bool,
 }
 
 /// The width the user dragged the messages to, separately for the own and the incoming ones.
@@ -106,6 +108,9 @@ fn transcript(ui: &mut Ui, outer: Rect, area: Rect, chat: &Chat, p: Palette) -> 
     let z = chat.zoom;
     let mut action = None;
     let mut width = None;
+    if ui.input(|i| i.pointer.primary_pressed()) {
+        ui.data_mut(|d| d.remove::<Selection>(selection_id()));
+    }
     ui.scope_builder(UiBuilder::new().max_rect(area), |ui| {
         let memo = theme::id(("chat_content_height", chat.id));
         let last: f32 = ui.data(|d| d.get_temp(memo)).unwrap_or(0.0);
@@ -130,12 +135,23 @@ fn transcript(ui: &mut Ui, outer: Rect, area: Rect, chat: &Chat, p: Palette) -> 
                 ui.vertical_centered(|ui| widgets::footnote(ui, "No messages yet. Type a note below, or drop files on the window."));
             }
             let now = now_secs();
+            let today = crate::clock::local(now).map(|t| t.date_naive());
+            let mut prev_day = None;
             for n in notes {
+                // a line with the day above the first message of each day
+                if n.ts > 0.0 {
+                    if let Some(day) = crate::clock::local(n.ts).map(|t| t.date_naive()) {
+                        if prev_day != Some(day) {
+                            day_line(ui, &p, &crate::clock::day_label(day, today.unwrap_or(day)), avail, z);
+                            prev_day = Some(day);
+                        }
+                    }
+                }
                 let own = n.src == "pc";
                 // a width the user dragged to is the width of every message of that side (but never wider than the chat)
                 let fixed = (if own { chat.widths.own } else { chat.widths.theirs }).map(|w| (w * z).clamp(MIN_BUBBLE_W * z, avail.max(MIN_BUBBLE_W * z)));
                 ui.with_layout(Layout::top_down(if own { Align::Max } else { Align::Min }), |ui| {
-                    let (a, w) = message(ui, &p, own, fixed.unwrap_or(max_w), fixed.is_some(), avail, n, now, z);
+                    let (a, w) = message(ui, &p, own, fixed.unwrap_or(max_w), fixed.is_some(), avail, n, now, z, chat.time_24h);
                     if a.is_some() {
                         action = a;
                     }
@@ -158,6 +174,27 @@ fn transcript(ui: &mut Ui, outer: Rect, area: Rect, chat: &Chat, p: Palette) -> 
         edge_fades(ui, outer, out.state.clamped_offset().y, overflow - out.state.clamped_offset().y, p);
     });
     (action, width)
+}
+
+/// A thin line across the chat with the day in the middle.
+fn day_line(ui: &mut Ui, p: &Palette, label: &str, width: f32, z: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 18.0 * z), Sense::hover());
+    let text = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(12.0 * z), p.label2);
+    let half = text.size().x / 2.0 + 10.0 * z;
+    let (cx, cy) = (rect.center().x, rect.center().y);
+    let stroke = Stroke::new(1.0, p.outline.gamma_multiply(0.45));
+    ui.painter().hline(rect.min.x..=(cx - half).max(rect.min.x), cy, stroke);
+    ui.painter().hline((cx + half).min(rect.max.x)..=rect.max.x, cy, stroke);
+    ui.painter().galley(pos2(cx - text.size().x / 2.0, cy - text.size().y / 2.0), text, p.label2);
+}
+
+/// The small time at the bottom right of a message, if the message has one.
+fn time_galley(painter: &egui::Painter, ts: f64, h24: bool, z: f32, color: Color32) -> Option<std::sync::Arc<egui::Galley>> {
+    if ts <= 0.0 {
+        return None;
+    }
+    let t = crate::clock::local(ts)?;
+    Some(painter.layout_no_wrap(crate::clock::time_text(&t, h24), egui::FontId::proportional(10.5 * z), color))
 }
 
 /// Soft fade at the top (when scrolled down) and bottom (when more is below) of the transcript.
@@ -198,16 +235,29 @@ fn corners_for(own: bool, z: f32) -> CornerRadius {
     if own { CornerRadius { nw: big, ne: big, sw: big, se: small } } else { CornerRadius { nw: big, ne: big, sw: small, se: big } }
 }
 
-/// Dragging a message sideways changes the width of all messages of its side. The free edge of the bubble (the
-/// left one for mine, the right one for the others) follows the pointer. Returns the new width in points at
-/// normal size. The pointer shows the resize cursor near that edge.
+/// Whether the drag that is going on over this message resizes it (Ctrl, on a Mac Cmd, was held when it started)
+/// or marks text. Decided once, when the drag starts, so letting go of the key in the middle changes nothing.
+fn drag_is_resize(ui: &Ui, resp: &egui::Response) -> bool {
+    let id = resp.id.with("resize-drag");
+    if resp.drag_started() {
+        let held = ui.input(|i| i.modifiers.command);
+        ui.data_mut(|d| d.insert_temp(id, held));
+    }
+    resp.dragged() && ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false)
+}
+
+/// Dragging a message sideways while Ctrl (Cmd on a Mac) is held changes the width of all messages of its side.
+/// The free edge of the bubble (the left one for mine, the right one for the others) follows the pointer. Returns
+/// the new width in points at normal size. With the key held, the pointer shows the resize cursor near that edge.
 fn bubble_drag(ui: &Ui, resp: &egui::Response, own: bool, avail: f32, z: f32) -> Option<f32> {
+    let resizing = drag_is_resize(ui, resp);
     let edge = if own { resp.rect.min.x } else { resp.rect.max.x };
-    let near = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| resp.rect.contains(pos) && (pos.x - edge).abs() < 10.0 * z);
-    if near || resp.dragged() {
+    let key = ui.input(|i| i.modifiers.command);
+    let near = key && ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| resp.rect.contains(pos) && (pos.x - edge).abs() < 10.0 * z);
+    if near || resizing {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
     }
-    let dx = if resp.dragged() { resp.drag_delta().x } else { 0.0 };
+    let dx = if resizing { resp.drag_delta().x } else { 0.0 };
     (dx != 0.0).then(|| ((resp.rect.width() + if own { -dx } else { dx }) / z).clamp(MIN_BUBBLE_W, (avail / z).max(MIN_BUBBLE_W)))
 }
 
@@ -215,10 +265,11 @@ fn bubble_drag(ui: &Ui, resp: &egui::Response, own: bool, avail: f32, z: f32) ->
 /// (the user chose a width); otherwise it is as wide as its text, up to `max_w`. Returns what was clicked and
 /// the new width when the bubble is being dragged.
 #[allow(clippy::too_many_arguments)]
-fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, avail: f32, n: &Note, now: f64, z: f32) -> (Option<MsgAction>, Option<f32>) {
+#[allow(clippy::too_many_arguments)]
+fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, avail: f32, n: &Note, now: f64, z: f32, h24: bool) -> (Option<MsgAction>, Option<f32>) {
     let (fill, fg, fg2) = if own { (p.tint, p.on_tint, p.on_tint) } else { (p.bubble, p.label, p.label2) };
     if let (NoteKind::File, Some(f)) = (&n.kind, &n.file) {
-        let (click, resp) = file_bubble(ui, p, corners_for(own, z), fill, fg, fg2, own, max_w, fixed, z, f);
+        let (click, resp) = file_bubble(ui, p, corners_for(own, z), fill, fg, fg2, own, max_w, fixed, z, f, n.ts, h24);
         let action = click.map(|a| match a {
             FileClick::Open => MsgAction::Open(f.clone()),
             FileClick::Folder => MsgAction::ShowFolder(f.clone()),
@@ -226,9 +277,9 @@ fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, avail: 
         });
         return (action, bubble_drag(ui, &resp, own, avail, z));
     }
-    let (resp, link) = text_bubble(ui, p, own, max_w, fixed, z, n, fill, fg, fg2);
+    let (resp, link) = text_bubble(ui, p, own, max_w, fixed, z, n, fill, fg, fg2, h24);
     let width = bubble_drag(ui, &resp, own, avail, z);
-    let resp = if resp.dragged() { resp } else { resp.on_hover_text(ago(now - n.ts)) };
+    let resp = if resp.dragged() { resp } else { resp.on_hover_text(crate::clock::local(n.ts).map(|t| crate::clock::full_text(&t, h24)).unwrap_or_else(|| ago(now - n.ts))) };
     let mut action = None;
     if let Some(url) = link {
         action = Some(MsgAction::OpenLink(url));
@@ -274,10 +325,22 @@ fn toolbar(ui: &mut Ui, p: &Palette, bubble: Rect, own: bool, buttons: &[(Icon, 
     clicked
 }
 
+/// The marked part of one message (character positions in the text shown). Only one message has a selection.
+#[derive(Clone)]
+struct Selection {
+    mid: String,
+    from: usize,
+    to: usize,
+}
+
+fn selection_id() -> egui::Id {
+    crate::theme::id("chat_selection")
+}
+
 /// A text message, drawn by hand so the bubble is only as wide as its text and so a quote of the
 /// message it answers can sit inside it. `z` is the size of the chat.
 #[allow(clippy::too_many_arguments)]
-fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, z: f32, n: &Note, fill: Color32, fg: Color32, fg2: Color32) -> (egui::Response, Option<String>) {
+fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, z: f32, n: &Note, fill: Color32, fg: Color32, fg2: Color32, h24: bool) -> (egui::Response, Option<String>) {
     let inner_max = max_w - 28.0 * z;
     let shown: String = n.text.as_deref().unwrap_or("").chars().take(2000).collect();
     let mut body_font = TextStyle::Body.resolve(ui.style());
@@ -297,9 +360,14 @@ fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, z: 
         (name, line, w, h)
     });
 
-    let inner_w = if fixed { inner_max } else { body.size().x.max(quote.as_ref().map_or(0.0, |q| q.2)) };
+    // the time sits at the bottom right, a little further right and lower than the text
+    let time = time_galley(&painter, n.ts, h24, z, if own { fg2.gamma_multiply(0.9) } else { fg2 });
+    let time_w = time.as_ref().map_or(0.0, |t| t.size().x - 3.0 * z);
+    let time_h = time.as_ref().map_or(0.0, |t| t.size().y + 1.0 * z);
+    let bottom = if time.is_some() { 4.0 * z } else { 9.0 * z };
+    let inner_w = if fixed { inner_max } else { body.size().x.max(quote.as_ref().map_or(0.0, |q| q.2)).max(time_w) };
     let quote_h = quote.as_ref().map_or(0.0, |q| q.3 + 6.0 * z);
-    let (rect, resp) = ui.allocate_exact_size(vec2(inner_w + 28.0 * z, 9.0 * z + quote_h + body.size().y + 9.0 * z), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(vec2(inner_w + 28.0 * z, 9.0 * z + quote_h + body.size().y + time_h + bottom), Sense::click_and_drag());
     painter.rect_filled(rect, corners_for(own, z), fill);
     let mut y = rect.min.y + 9.0 * z;
     if let Some((name, line, _, h)) = quote {
@@ -313,6 +381,25 @@ fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, z: 
         y += h + 6.0 * z;
     }
     let origin = pos2(rect.min.x + 14.0 * z, y);
+    let sel_id = selection_id();
+    let resizing = drag_is_resize(ui, &resp);
+    // mark text by dragging over it (a drag with Ctrl / Cmd held resizes instead)
+    let index_at = |pos: egui::Pos2| -> usize { body.cursor_from_pos(pos - origin).index.into() };
+    if resp.drag_started() && !resizing {
+        if let Some(start) = ui.input(|i| i.pointer.press_origin()) {
+            let at = index_at(start);
+            ui.data_mut(|d| d.insert_temp(sel_id, Selection { mid: n.mid.clone(), from: at, to: at }));
+        }
+    }
+    if resp.dragged() && !resizing {
+        if let (Some(pos), Some(mut sel)) = (ui.input(|i| i.pointer.interact_pos()), ui.data(|d| d.get_temp::<Selection>(sel_id))) {
+            if sel.mid == n.mid {
+                sel.to = index_at(pos);
+                ui.data_mut(|d| d.insert_temp(sel_id, sel));
+            }
+        }
+    }
+    let selection = ui.data(|d| d.get_temp::<Selection>(sel_id)).filter(|sel| sel.mid == n.mid && sel.from != sel.to);
     let hovered_link = ui
         .input(|i| i.pointer.hover_pos())
         .filter(|pos| resp.contains_pointer() && Rect::from_min_size(origin, body.size()).contains(*pos))
@@ -320,9 +407,28 @@ fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, z: 
             let index: usize = body.cursor_from_pos(pos - origin).index.into();
             links.iter().find(|l| l.start <= index && index < l.end).map(|l| l.url.clone())
         });
-    painter.galley(origin, body, fg);
+    let mut galley = body;
+    if let Some(sel) = &selection {
+        let mut visuals = ui.visuals().clone();
+        visuals.selection.bg_fill = if own { Color32::from_white_alpha(90) } else { p.tint.gamma_multiply(0.5) };
+        visuals.selection.stroke.color = fg;
+        let range = egui::text_selection::CCursorRange::two(egui::text::CCursor::new(sel.from), egui::text::CCursor::new(sel.to));
+        egui::text_selection::visuals::paint_text_selection(&mut galley, &visuals, &range, None);
+        // Ctrl+C / Cmd+C copies the marked text (unless the text box has the keyboard)
+        if ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) && !ui.ctx().egui_wants_keyboard_input() {
+            let (lo, hi) = (sel.from.min(sel.to), sel.from.max(sel.to));
+            ui.ctx().copy_text(shown.chars().skip(lo).take(hi - lo).collect());
+        }
+    }
+    let over_body = resp.contains_pointer() && ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| Rect::from_min_size(origin, galley.size()).contains(pos));
+    painter.galley(origin, galley, fg);
+    if let Some(t) = time {
+        painter.galley(pos2(rect.max.x - 11.0 * z - t.size().x, rect.max.y - 4.0 * z - t.size().y), t, fg2);
+    }
     if hovered_link.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    } else if over_body && !ui.input(|i| i.modifiers.command) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
     }
     let clicked = if resp.clicked() { hovered_link } else { None };
     (resp, clicked)
@@ -360,7 +466,7 @@ enum FileClick {
 /// A file: icon, name and size, drawn by hand so the bubble is only as wide as its text. Click opens it.
 /// While the pointer is on it, a folder button and a red x (delete) appear. `z` is the size of the chat.
 #[allow(clippy::too_many_arguments)]
-fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, fg: Color32, fg2: Color32, own: bool, max_w: f32, fixed: bool, z: f32, f: &FileRef) -> (Option<FileClick>, egui::Response) {
+fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, fg: Color32, fg2: Color32, own: bool, max_w: f32, fixed: bool, z: f32, f: &FileRef, ts: f64, h24: bool) -> (Option<FileClick>, egui::Response) {
     let reserved = 40.0 * z; // room at the right for the folder button
     let sub = match f.dir {
         Direction::ToPc | Direction::FromPeer => format!("{} \u{b7} saved to the inbox", size(f.size)),
@@ -371,13 +477,16 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
     let name = widgets::one_line(ui.painter(), &f.name, 14.0 * z, fg, text_max);
     let sub = widgets::one_line(ui.painter(), &sub, 12.0 * z, fg2, text_max);
     let text_w = name.size().x.max(sub.size().x);
-    let width = if fixed { max_w } else { (14.0 + 36.0 + 10.0) * z + text_w + reserved };
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, (36.0 + 18.0) * z), Sense::click_and_drag());
+    let time = time_galley(ui.painter(), ts, h24, z, if own { fg2.gamma_multiply(0.9) } else { fg2 });
+    let time_w = time.as_ref().map_or(0.0, |t| t.size().x + 25.0 * z);
+    let width = if fixed { max_w } else { ((14.0 + 36.0 + 10.0) * z + text_w + reserved).max(time_w) };
+    let height = if time.is_some() { (36.0 + 18.0 + 10.0) * z } else { (36.0 + 18.0) * z };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     let openable = f.local_path.is_some();
     let resp = if openable && !resp.dragged() { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
     // The two small buttons sit on top of the bubble. Their places are known up front so that the tooltip
     // of the bubble ("Open") is only shown where the pointer is not on one of them.
-    let folder_r = Rect::from_center_size(pos2(rect.max.x - 24.0 * z, rect.max.y - 18.0 * z), vec2(28.0 * z, 28.0 * z));
+    let folder_r = Rect::from_center_size(pos2(rect.max.x - 24.0 * z, rect.min.y + 27.0 * z), vec2(28.0 * z, 28.0 * z));
     // The red x sits on the rounded top right corner of the bubble, half inside and half outside.
     let delete_r = Rect::from_center_size(pos2(rect.max.x - 5.3 * z, rect.min.y + 5.3 * z), vec2(20.0 * z, 20.0 * z));
     let on_buttons = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| delete_r.contains(pos) || (openable && folder_r.contains(pos)));
@@ -389,6 +498,9 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
     let x = icon.max.x + 10.0 * z;
     painter.galley(pos2(x, rect.min.y + 10.0 * z), name, fg);
     painter.galley(pos2(x, rect.min.y + 29.0 * z), sub, fg2);
+    if let Some(t) = time {
+        painter.galley(pos2(rect.max.x - 11.0 * z - t.size().x, rect.max.y - 4.0 * z - t.size().y), t, fg2);
+    }
 
     let mut action = if resp.clicked() && openable && !on_buttons { Some(FileClick::Open) } else { None };
     if ui.rect_contains_pointer(rect) || ui.rect_contains_pointer(delete_r) {

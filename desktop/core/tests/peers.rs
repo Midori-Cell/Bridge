@@ -1064,18 +1064,15 @@ async fn clear_chat_and_clear_list_are_independent_for_a_pc() {
     a.b.send_peer_text(&a_to_b, "two").await.unwrap();
     eventually("B has both", || (b.b.peer_notes(&b_to_a, 10).len() == 2).then_some(())).await;
 
-    let shown = |pc: &Pc, id: &str| -> (usize, usize) {
-        let n = pc.b.peer_notes(id, 10);
-        (n.iter().filter(|n| !n.chat_hidden).count(), n.iter().filter(|n| !n.list_hidden).count())
-    };
+    let shown = |pc: &Pc, id: &str| -> usize { pc.b.peer_notes(id, 10).iter().filter(|n| !n.chat_hidden).count() };
     a.b.clear_peer_chat(&a_to_b);
-    assert_eq!(shown(&a, &a_to_b), (0, 2));
-    assert_eq!(shown(&b, &b_to_a), (2, 2), "the other PC keeps its own copy");
+    assert!(a.b.peer_notes(&a_to_b, 10).is_empty(), "the list shows files only, so a cleared text is gone");
+    assert_eq!(shown(&b, &b_to_a), 2, "the other PC keeps its own copy");
     a.b.send_peer_text(&a_to_b, "three").await.unwrap();
-    assert_eq!(shown(&a, &a_to_b), (1, 3));
+    assert_eq!(shown(&a, &a_to_b), 1);
     a.b.clear_peer_list(&a_to_b);
-    assert_eq!(shown(&a, &a_to_b), (1, 0));
+    assert_eq!(shown(&a, &a_to_b), 1, "clearing the list does not touch texts");
     a.b.clear_peer_chat(&a_to_b);
-    assert!(a.b.peer_notes(&a_to_b, 10).is_empty(), "cleared from both views");
-    assert_eq!(shown(&b, &b_to_a).0, 3);
+    assert!(a.b.peer_notes(&a_to_b, 10).is_empty());
+    assert_eq!(shown(&b, &b_to_a), 3);
 }
