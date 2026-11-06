@@ -1076,3 +1076,103 @@ async fn clear_chat_and_clear_list_are_independent_for_a_pc() {
     assert!(a.b.peer_notes(&a_to_b, 10).is_empty());
     assert_eq!(shown(&b, &b_to_a), 3);
 }
+
+// ---------------------------------------------------------------- messages and files wait for a PC that is off
+
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    l.local_addr().unwrap().port()
+}
+
+/// B stops (a real shutdown); returns nothing, the data stays in B's folder.
+async fn stop(pc: &mut Pc) {
+    let mut c = pc.cfg.clone();
+    c.lan_port = 0;
+    c.peer_port = 0;
+    let old = std::mem::replace(&mut pc.b, Arc::new(Bridge::start(c).await.unwrap()));
+    Arc::try_unwrap(old).ok().expect("single handle").shutdown().await;
+}
+
+async fn start_on(pc: &Pc, port: u16) -> Bridge {
+    let mut c = pc.cfg.clone();
+    c.lan_port = 0;
+    c.peer_port = port;
+    Bridge::start(c).await.unwrap()
+}
+
+async fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+    for _ in 0..(secs * 10) {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("timed out waiting for: {what}");
+}
+
+#[tokio::test]
+async fn messages_and_files_for_an_offline_pc_wait_and_go_out_when_it_is_back() {
+    let port_b = free_port();
+    let a = Pc::new("A").await;
+    let mut b = Pc::with_ports("B", port_b).await;
+    let (a_to_b, b_to_a) = pair(&a, &b).await;
+    stop(&mut b).await;
+
+    // A writes while B is off: nothing fails, the message shows as waiting
+    let note = a.b.send_peer_text(&a_to_b, "while you were away").await.unwrap();
+    assert!(note.pending);
+    let file = a.tmp.path().join("doc.txt");
+    std::fs::write(&file, b"file content").unwrap();
+    assert!(matches!(a.b.send_peer_file(&a_to_b, &file).await, Err(PeerError::Queued)));
+    assert!(a.b.transfers().iter().any(|t| t.state == TransferState::Queued));
+    assert!(a.b.peer_notes(&a_to_b, 10)[0].pending);
+    // clearing the chat does not throw away what was not delivered yet
+    a.b.clear_peer_chat(&a_to_b);
+    assert_eq!(a.b.peer_notes(&a_to_b, 10).len(), 1);
+
+    // B is back: both arrive, and A's message is no longer waiting
+    let restarted = start_on(&b, port_b).await;
+    wait_for("the message and the file arrive", 30, || {
+        let n = restarted.peer_notes(&b_to_a, 10);
+        n.iter().any(|n| n.text.as_deref() == Some("while you were away")) && n.iter().any(|n| n.file.as_ref().is_some_and(|f| f.name == "doc.txt"))
+    })
+    .await;
+    wait_for("A no longer shows it as waiting", 5, || !a.b.peer_notes(&a_to_b, 10).iter().any(|n| n.pending)).await;
+    assert!(!a.b.transfers().iter().any(|t| t.state == TransferState::Queued));
+    // exactly once
+    assert_eq!(restarted.peer_notes(&b_to_a, 10).iter().filter(|n| n.text.is_some()).count(), 1);
+    assert_eq!(std::fs::read(b.inbox().join("doc.txt")).unwrap(), b"file content");
+}
+
+#[tokio::test]
+async fn the_queue_survives_a_restart_and_waiting_items_can_be_taken_back() {
+    let port_b = free_port();
+    let mut a = Pc::new("A").await;
+    let mut b = Pc::with_ports("B", port_b).await;
+    let (a_to_b, b_to_a) = pair(&a, &b).await;
+    stop(&mut b).await;
+
+    let keep = a.b.send_peer_text(&a_to_b, "keep me").await.unwrap();
+    let drop_text = a.b.send_peer_text(&a_to_b, "never mind").await.unwrap();
+    let file = a.tmp.path().join("skip.txt");
+    std::fs::write(&file, b"x").unwrap();
+    let _ = a.b.send_peer_file(&a_to_b, &file).await;
+    let tid = a.b.transfers().into_iter().find(|t| t.state == TransferState::Queued).unwrap().id;
+    assert!(keep.pending && drop_text.pending);
+
+    // deleting a waiting message and stopping a waiting file take them off the queue
+    assert!(a.b.delete_peer_note(&a_to_b, &drop_text.mid).await);
+    assert!(a.b.cancel_transfer(&tid));
+    assert!(a.b.transfers().iter().any(|t| t.id == tid && t.state == TransferState::Cancelled));
+
+    // the queue is saved: it survives a restart of A
+    a.restart().await;
+    assert!(a.b.peer_notes(&a_to_b, 10).iter().any(|n| n.mid == keep.mid && n.pending));
+
+    let restarted = start_on(&b, port_b).await;
+    wait_for("the kept message arrives", 30, || restarted.peer_notes(&b_to_a, 10).iter().any(|n| n.text.as_deref() == Some("keep me"))).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let got = restarted.peer_notes(&b_to_a, 10);
+    assert!(!got.iter().any(|n| n.text.as_deref() == Some("never mind")), "the deleted message is not sent");
+    assert!(!got.iter().any(|n| n.file.is_some()), "the stopped file is not sent");
+}

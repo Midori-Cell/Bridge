@@ -93,6 +93,7 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
     val transfers by Bridge.transfers.collectAsState()
     val saved by Bridge.saved.collectAsState()
     val time24 by Bridge.time24.collectAsState()
+    val cleared by Bridge.cleared.collectAsState()
     var text by rememberSaveable { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<Note?>(null) }
     var sending by remember { mutableStateOf(false) }
@@ -120,6 +121,9 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
     val fadeTop by animateFloatAsState(if (listState.canScrollForward) 0.95f else 0f, label = "fadeTop")
     val fadeBottom by animateFloatAsState(if (listState.canScrollBackward) 0.95f else 0f, label = "fadeBottom")
     val current = pc ?: return
+    // "Clear chat" hides the older messages on this phone only; the files below are not affected
+    val hiddenUpTo = cleared[current.id] ?: 0L
+    val chat = notes.filter { it.pending || it.id > hiddenUpTo }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 16.dp),
@@ -146,17 +150,20 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
             }
             Column(Modifier.weight(1f)) {
                 Txt(current.name, weight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                val (color, label) = when (link) {
-                    Link.Online -> p.green to "Connected · encrypted"
-                    Link.Connecting -> p.label2 to "Connecting..."
-                    Link.Offline -> p.red to "PC not reachable"
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box(Modifier.size(9.dp).clip(CircleShape).background(color))
-                    Txt(label, color = color, size = 13.sp)
-                }
             }
             TextAction("Change", onChange)
+        }
+
+        // how the PC is reached, and Clear chat at the right end of the same line
+        val (linkColor, linkLabel) = when (link) {
+            Link.Online -> p.green to "Connected · encrypted"
+            Link.Connecting -> p.label2 to "Connecting..."
+            Link.Offline -> p.red to "PC not reachable. Messages wait and are sent when it is back."
+        }
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.size(9.dp).clip(CircleShape).background(linkColor))
+            Txt(linkLabel, Modifier.weight(1f), color = linkColor, size = 13.sp, maxLines = 2)
+            TextAction("Clear chat", { Bridge.clearChat(current) })
         }
 
         // the chat: messages above, the note being written below
@@ -168,7 +175,7 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
                     .nestedScroll(keepScrollInChat)
                     .topBorder(p.outline, 12.dp),
             ) {
-                if (notes.isEmpty()) {
+                if (chat.isEmpty()) {
                     Txt("Nothing here yet.", Modifier.align(Alignment.Center), color = p.label2, size = 14.sp)
                 }
                 LazyColumn(
@@ -178,7 +185,7 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    val shown = notes.asReversed()
+                    val shown = chat.asReversed()
                     itemsIndexed(shown, key = { _, n -> n.id }) { i, note ->
                         // the list runs newest first, so the next item is the older message
                         val older = shown.getOrNull(i + 1)
@@ -188,7 +195,7 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
                             Bubble(
                                 note = note,
                                 state = fileState(note, transfers, saved),
-                                time = if (note.ts > 0) timeText(note.ts, time24) else "",
+                                time = if (note.pending) "Waiting to send" else if (note.ts > 0) timeText(note.ts, time24) else "",
                                 onTap = { fileTap(context, note, current, saved) },
                                 onCopy = { copyText(context, note.text.orEmpty()) },
                                 onReply = { replyTo = note },
@@ -330,9 +337,9 @@ private fun Bubble(note: Note, state: FileState, time: String, onTap: () -> Unit
                         }
                     } else {
                         MenuRow("Copy", R.drawable.ic_copy, p.label) { menu = false; onCopy() }
-                        MenuRow("Reply", R.drawable.ic_reply, p.label) { menu = false; onReply() }
+                        if (!note.pending) MenuRow("Reply", R.drawable.ic_reply, p.label) { menu = false; onReply() }
                     }
-                    MenuRow("Delete", R.drawable.ic_trash, p.red) { menu = false; onDelete() }
+                    MenuRow(if (note.pending) "Cancel sending" else "Delete", R.drawable.ic_trash, p.red) { menu = false; onDelete() }
                 }
             }
         }

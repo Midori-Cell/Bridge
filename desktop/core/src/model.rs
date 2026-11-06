@@ -132,6 +132,10 @@ pub struct Note {
     /// Cleared from the list "Notes and files" on this PC. The note stays in the chat (and on the phone).
     #[serde(default, skip_serializing_if = "is_false")]
     pub list_hidden: bool,
+    /// Written here but not delivered yet, because the other PC was not reachable. It is sent as soon as that PC is
+    /// online. Only messages to another PC can be waiting.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pending: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -148,13 +152,18 @@ pub enum Clear {
 }
 
 impl Clear {
-    /// Mark every note picked by `mine` as cleared from the chosen view(s), take out the ones that are
-    /// now cleared from everywhere they are shown, and return those. The list shows files only, so a
-    /// text message is gone as soon as it is cleared from the chat.
-    pub(crate) fn apply(self, notes: &mut Vec<Note>, mine: impl Fn(&Note) -> bool) -> Vec<Note> {
-        for n in notes.iter_mut().filter(|n| mine(n)) {
+    /// Mark every note picked by `mine` as cleared from the chosen view(s). Messages that are not delivered yet
+    /// are never cleared. With `remove`, the ones that are now cleared from everywhere they are shown are taken
+    /// out and returned (the list shows files only, so a text is gone as soon as it is cleared from the chat).
+    /// Without it nothing is removed: the notes of a phone are the phone's own history too, which it reads from
+    /// this PC, so clearing here must only hide them here.
+    pub(crate) fn apply(self, notes: &mut Vec<Note>, mine: impl Fn(&Note) -> bool, remove: bool) -> Vec<Note> {
+        for n in notes.iter_mut().filter(|n| !n.pending && mine(n)) {
             n.chat_hidden |= self != Clear::List;
             n.list_hidden |= self != Clear::Chat;
+        }
+        if !remove {
+            return Vec::new();
         }
         let (gone, keep): (Vec<Note>, Vec<Note>) =
             std::mem::take(notes).into_iter().partition(|n| n.chat_hidden && (n.list_hidden || n.file.is_none()));
@@ -170,6 +179,7 @@ impl Note {
         n.dev.clear();
         n.chat_hidden = false;
         n.list_hidden = false;
+        n.pending = false;
         if let Some(f) = n.file.as_mut() {
             f.local_path = None;
         }
@@ -239,6 +249,33 @@ pub(crate) struct Persist {
     /// 0: keep waiting (the other PC drops an unanswered offer after 15 minutes anyway).
     #[serde(default)]
     pub offer_timeout_secs: u32,
+    /// Messages and files for a paired PC that was not reachable, by its fingerprint, oldest first. They are
+    /// sent as soon as that PC is online.
+    #[serde(default)]
+    pub outbox: BTreeMap<String, Vec<Queued>>,
+}
+
+/// Something waiting to be sent to another PC.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Queued {
+    Text {
+        mid: String,
+        text: String,
+        #[serde(default)]
+        reply: Option<serde_json::Value>,
+    },
+    /// A file: `tid` is the id of the "waiting" transfer shown to the user.
+    File { tid: String, path: String },
+}
+
+impl Queued {
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            Queued::Text { mid, .. } => mid,
+            Queued::File { tid, .. } => tid,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -331,6 +368,8 @@ pub enum TransferState {
     Declined,
     /// Stopped by either side. `error` says by whom.
     Cancelled,
+    /// The other PC is not reachable; the file is sent as soon as it is online.
+    Queued,
 }
 
 #[derive(Clone, Debug, Serialize)]

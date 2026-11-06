@@ -323,7 +323,7 @@ impl Hub {
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 match me.bridge.send_peer_file(&peer, &path).await {
                     // the transfer card already says that the file was declined or cancelled
-                    Ok(_) | Err(PeerError::Cancelled | PeerError::Declined) => {}
+                    Ok(_) | Err(PeerError::Cancelled | PeerError::Declined | PeerError::Queued) => {}
                     Err(e) => me.toast(format!("Could not send {name}: {e}"), true),
                 }
             });

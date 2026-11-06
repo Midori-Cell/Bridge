@@ -103,6 +103,7 @@ fn report_transfer(t: &TransferInfo, seen: &mut HashMap<String, (TransferState, 
         TransferState::Interrupted => println!("[file] {arrow}: {what} interrupted at {} (the phone can resume)", size(t.done)),
         TransferState::Failed => println!("[file] {arrow}: {what} FAILED: {}", t.error.as_deref().unwrap_or("unknown")),
         TransferState::Offered => println!("[file] {arrow}: {what} offered"),
+        TransferState::Queued => println!("[file] {arrow}: {what} waiting for the other PC to be online"),
         TransferState::Declined => println!("[file] {arrow}: {what} declined"),
         TransferState::Cancelled => println!("[file] {arrow}: {what} cancelled"),
     }

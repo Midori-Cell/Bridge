@@ -53,8 +53,13 @@ name or last message. **Settings** is at the bottom.
 - **Times and days:** every message shows its time at the bottom right (hover for the full date), and a line with *Today*, *Yesterday*, the weekday or the date starts each day. Settings > Time format switches between 24-hour and 12-hour.
 - **Files**, below the chat, lists the files you sent and received with *Open* and *Show folder* (texts are only in the chat).
 - **Clear chat** (above the chat) and **Clear list** (above Files) work independently: clearing one leaves the
-  other as it is. A message disappears from this PC for good once it is cleared from both. Only this PC is affected;
-  the other device keeps its copy. Files you received stay in your inbox folder.
+  other as it is. They only hide things on this PC. The other device keeps everything: a phone reads its history
+  from this PC, so its messages stay stored here (hidden) until you delete them one by one or unpair the phone.
+  Messages to another PC that were not delivered yet are never cleared. Files you received stay in your inbox folder.
+- **When the other PC is off:** a message to another PC is kept (shown as "Waiting to send") and a file shows
+  "Waiting for NAME to be online". Both are saved and go out by themselves a few seconds after that PC is reachable
+  again, also after this program was restarted. Delete the message or press *Cancel* on the file to take it back.
+  A phone reads what the PC wrote for it the next time it connects.
 - **Zoom:** Ctrl + mouse wheel zooms the whole window, or Ctrl +/- and Ctrl 0, from 60 to 200 %. With the pointer on the chat,
   Ctrl + mouse wheel changes only the size of the messages and the text box (70 to 220 %); *Settings > Chat size > Reset* undoes it.
 

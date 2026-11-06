@@ -189,7 +189,10 @@ fn day_line(ui: &mut Ui, p: &Palette, label: &str, width: f32, z: f32) {
 }
 
 /// The small time at the bottom right of a message, if the message has one.
-fn time_galley(painter: &egui::Painter, ts: f64, h24: bool, z: f32, color: Color32) -> Option<std::sync::Arc<egui::Galley>> {
+fn time_galley(painter: &egui::Painter, ts: f64, h24: bool, pending: bool, z: f32, color: Color32) -> Option<std::sync::Arc<egui::Galley>> {
+    if pending {
+        return Some(painter.layout_no_wrap("Waiting to send".to_owned(), egui::FontId::proportional(10.5 * z), color));
+    }
     if ts <= 0.0 {
         return None;
     }
@@ -264,7 +267,6 @@ fn bubble_drag(ui: &Ui, resp: &egui::Response, own: bool, avail: f32, z: f32) ->
 /// One message: the bubble plus whatever the mouse can do with it. `fixed`: the bubble is exactly `max_w` wide
 /// (the user chose a width); otherwise it is as wide as its text, up to `max_w`. Returns what was clicked and
 /// the new width when the bubble is being dragged.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, avail: f32, n: &Note, now: f64, z: f32, h24: bool) -> (Option<MsgAction>, Option<f32>) {
     let (fill, fg, fg2) = if own { (p.tint, p.on_tint, p.on_tint) } else { (p.bubble, p.label, p.label2) };
@@ -361,7 +363,7 @@ fn text_bubble(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, z: 
     });
 
     // the time sits at the bottom right, a little further right and lower than the text
-    let time = time_galley(&painter, n.ts, h24, z, if own { fg2.gamma_multiply(0.9) } else { fg2 });
+    let time = time_galley(&painter, n.ts, h24, n.pending, z, if own { fg2.gamma_multiply(0.9) } else { fg2 });
     let time_w = time.as_ref().map_or(0.0, |t| t.size().x - 3.0 * z);
     let time_h = time.as_ref().map_or(0.0, |t| t.size().y + 1.0 * z);
     let bottom = if time.is_some() { 4.0 * z } else { 9.0 * z };
@@ -477,7 +479,7 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
     let name = widgets::one_line(ui.painter(), &f.name, 14.0 * z, fg, text_max);
     let sub = widgets::one_line(ui.painter(), &sub, 12.0 * z, fg2, text_max);
     let text_w = name.size().x.max(sub.size().x);
-    let time = time_galley(ui.painter(), ts, h24, z, if own { fg2.gamma_multiply(0.9) } else { fg2 });
+    let time = time_galley(ui.painter(), ts, h24, false, z, if own { fg2.gamma_multiply(0.9) } else { fg2 });
     let time_w = time.as_ref().map_or(0.0, |t| t.size().x + 25.0 * z);
     let width = if fixed { max_w } else { ((14.0 + 36.0 + 10.0) * z + text_w + reserved).max(time_w) };
     let height = if time.is_some() { (36.0 + 18.0 + 10.0) * z } else { (36.0 + 18.0) * z };

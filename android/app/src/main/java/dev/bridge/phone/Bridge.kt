@@ -54,6 +54,9 @@ object Bridge {
     /** How long one request for news waits. The PC shows the phone as online as long as it hears from it this often. */
     private const val POLL_SECONDS = 10
 
+    /** Ids of texts that wait to be sent start here, far above the ids the PC gives, so they stay at the end of the chat. */
+    private const val PENDING_BASE = 1L shl 40
+
     private lateinit var app: Application
     private lateinit var store: Store
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -79,6 +82,13 @@ object Bridge {
     /** Short messages for the user (a toast): "unpaired", "no longer on the PC", ... */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
+
+    /** Per PC: messages up to this id are hidden in the chat on this phone (Clear chat). Nothing is deleted. */
+    private val _cleared = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val cleared: StateFlow<Map<String, Long>> = _cleared.asStateFlow()
+
+    private val outboxGate = Mutex()
+    private var flushJob: Job? = null
 
     private val _themeMode = MutableStateFlow(ThemeMode.System)
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
@@ -109,6 +119,8 @@ object Bridge {
         _themeMode.value = store.themeMode
         _time24.value = store.time24
         reload()
+        _cleared.value = _pcs.value.associate { it.id to store.clearedUpTo(it.id) }
+        if (store.outbox().isNotEmpty()) ensureFlusher()
     }
 
     private fun say(text: String) {
@@ -267,7 +279,7 @@ object Bridge {
                 val mine = myName
                 val news = r.notes.filter { mine == null || it.src == "pc" || it.src == mine }
                 val gone = r.deleted.toSet()
-                _notes.update { old -> ((if (first) emptyList() else old) + news).distinctBy { it.id }.filter { it.mid !in gone }.sortedBy { it.id }.takeLast(500) }
+                _notes.update { old -> ((if (first) emptyList() else old) + news + pendingNotes(pc.id)).distinctBy { it.id }.filter { it.mid !in gone }.sortedBy { it.id }.takeLast(500) }
 
                 // files the PC sent since the last visit are offered now (the phone user decides); the older history is left alone
                 val seen = store.seen(pc.id) ?: r.lastId
@@ -316,9 +328,76 @@ object Bridge {
         forget(pc)
     }
 
-    /** Returns an error text, or null when the note was sent. */
+    /** The PC cannot be reached (off, away, other network), as opposed to a PC that answered "no". */
+    private fun isOffline(e: Throwable): Boolean =
+        e is IOException && e !is ApiException && generateSequence(e) { it.cause }.none { it.message?.contains("not the PC that was paired") == true }
+
+    private fun pendingNote(q: Queued) = Note(id = PENDING_BASE + (q.ts * 1000).toLong(), mid = q.id, ts = q.ts, src = myName ?: "phone", kind = "text", text = q.text, pending = true)
+
+    private fun pendingNotes(pcId: String): List<Note> = store.outbox().filter { it.pcId == pcId }.map { pendingNote(it) }
+
+    /** Keep a text that cannot be delivered now: it shows in the chat as waiting and is sent as soon as the PC is online. */
+    private fun enqueue(pc: Pc, text: String, replyTo: String?) {
+        val q = Queued(id = "pending-" + UUID.randomUUID().toString().take(12), pcId = pc.id, text = text, replyTo = replyTo, ts = System.currentTimeMillis() / 1000.0)
+        store.saveOutbox(store.outbox() + q)
+        if (pc.id == _active.value?.id) _notes.update { (it + pendingNote(q)).distinctBy { n -> n.id }.sortedBy { n -> n.id } }
+        ensureFlusher()
+    }
+
+    private fun ensureFlusher() {
+        if (flushJob?.isActive == true) return
+        flushJob = scope.launch {
+            while (store.outbox().isNotEmpty()) {
+                flushOutbox()
+                if (store.outbox().isEmpty()) break
+                delay(5000)
+            }
+        }
+    }
+
+    /** Send what is waiting, oldest first, to the PCs that can be reached now. Stops at the first PC that cannot be reached. */
+    private suspend fun flushOutbox() {
+        outboxGate.withLock {
+            for (q in store.outbox()) {
+                val pc = _pcs.value.firstOrNull { it.id == q.pcId }
+                if (pc == null) {
+                    dropQueued(q)
+                    continue
+                }
+                try {
+                    val note = api(pc).sendNote(q.text, q.replyTo)
+                    store.saveOutbox(store.outbox().filter { it.id != q.id })
+                    if (pc.id == _active.value?.id) _notes.update { l -> (l.filter { it.mid != q.id } + note).distinctBy { n -> n.id }.sortedBy { n -> n.id } }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: ApiException) {
+                    if (e.status == 401) {
+                        unpaired(pc)
+                        return
+                    }
+                    // the PC refuses this text for good: do not ask again and again
+                    dropQueued(q)
+                    say(explain(e))
+                } catch (e: Exception) {
+                    return // not reachable yet: keep the order and try again later
+                }
+            }
+        }
+    }
+
+    private fun dropQueued(q: Queued) {
+        store.saveOutbox(store.outbox().filter { it.id != q.id })
+        _notes.update { l -> l.filter { it.mid != q.id } }
+    }
+
+    /** Returns an error text, or null when the note was sent or is waiting to be sent. */
     suspend fun sendText(text: String, replyTo: String?, pc: Pc? = _active.value): String? = withContext(Dispatchers.IO) {
         if (pc == null) return@withContext "Pair a PC first."
+        // something is already waiting for this PC: stay behind it so the order is kept
+        if (store.outbox().any { it.pcId == pc.id }) {
+            enqueue(pc, text, replyTo)
+            return@withContext null
+        }
         try {
             val note = api(pc).sendNote(text, replyTo)
             if (pc.id == _active.value?.id) _notes.update { (it + note).distinctBy { n -> n.id }.sortedBy { n -> n.id } }
@@ -327,6 +406,10 @@ object Bridge {
             throw e
         } catch (e: Exception) {
             if (e is ApiException && e.status == 401) unpaired(pc)
+            if (isOffline(e)) {
+                enqueue(pc, text, replyTo)
+                return@withContext null
+            }
             explain(e)
         }
     }
@@ -334,11 +417,25 @@ object Bridge {
     /** For the share sheet, which closes before the answer is known. */
     fun sendTextInBackground(text: String, pc: Pc) {
         scope.launch {
-            sendText(text, null, pc)?.let { say(it) }
+            val error = sendText(text, null, pc)
+            if (error != null) say(error) else if (store.outbox().any { it.pcId == pc.id }) say("The PC is not reachable. The text is sent as soon as it is back.")
         }
     }
 
+    /** Hide the chat with this PC on this phone. Nothing is deleted: the PC keeps everything, and so does the list of files. */
+    fun clearChat(pc: Pc) {
+        val top = _notes.value.filter { !it.pending }.maxOfOrNull { it.id } ?: return
+        store.setClearedUpTo(pc.id, top)
+        _cleared.update { it + (pc.id to top) }
+    }
+
     suspend fun deleteNote(note: Note): String? = withContext(Dispatchers.IO) {
+        // a text that was not delivered yet is simply taken back
+        if (note.pending) {
+            outboxGate.withLock { store.saveOutbox(store.outbox().filter { it.id != note.mid }) }
+            _notes.update { l -> l.filter { it.id != note.id } }
+            return@withContext null
+        }
         val pc = _active.value ?: return@withContext "Pair a PC first."
         try {
             api(pc).deleteNote(note.mid)
@@ -390,7 +487,10 @@ object Bridge {
             val (name, size) = describe(uri)
             val key = UUID.randomUUID().toString()
             _transfers.update { it + Transfer(key, pc.id, name, size, upload = true) }
-            track(key, scope.launch(start = CoroutineStart.LAZY) { uploadGate.withLock { upload(key, uri, size, pc) } })
+            track(key, scope.launch(start = CoroutineStart.LAZY) {
+                waitForPc(key, pc)
+                uploadGate.withLock { upload(key, uri, size, pc) }
+            })
         }
     }
 
@@ -402,6 +502,27 @@ object Bridge {
             if (cause is CancellationException) change(key) { if (it.running) it.copy(state = TState.Failed, error = "Cancelled") else it }
         }
         job.start()
+    }
+
+    /** If the PC cannot be reached, the file waits (shown as "waiting for the PC to be online") and is sent as soon as it is. */
+    private suspend fun waitForPc(key: String, pc: Pc) {
+        var queued = false
+        while (true) {
+            try {
+                api(pc).ping()
+                break
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (!isOffline(e)) break // the upload reports a real problem itself
+                if (!queued) {
+                    queued = true
+                    change(key) { it.copy(state = TState.Queued) }
+                }
+                delay(5000)
+            }
+        }
+        if (queued) change(key) { it.copy(state = TState.Waiting) }
     }
 
     private suspend fun upload(key: String, uri: Uri, size: Long, pc: Pc) {

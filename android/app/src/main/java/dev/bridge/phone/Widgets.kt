@@ -235,7 +235,7 @@ fun fileState(note: Note, transfers: List<Transfer>, saved: Map<String, String>)
     if (file.dir != "to_phone") return FileState(null, "${sizeText(file.size)} · sent")
     val t = transfers.firstOrNull { it.key == file.id }
     return when {
-        t != null && t.running -> FileState(null, if (t.state == TState.Waiting) "Waiting..." else "${percent(t)}%")
+        t != null && t.running -> FileState(null, if (t.state == TState.Waiting || t.state == TState.Queued) "Waiting..." else "${percent(t)}%")
         file.id in saved -> FileState("Open", "${sizeText(file.size)} · saved in Downloads/Bridge")
         t != null && t.state == TState.Failed -> FileState("Retry", "Failed: ${t.error ?: "unknown error"}")
         else -> FileState("Save", "${sizeText(file.size)} · not saved yet")

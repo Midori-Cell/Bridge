@@ -196,6 +196,7 @@ pub fn transfers(ui: &mut Ui, list: &[TransferInfo]) -> Option<TransferAction> {
                 let (title, sub, sub_color) = match t.state {
                     TransferState::Offered if incoming(t) => (format!("{who} wants to send a file"), format!("{}  \u{b7}  {}", t.name, size(t.size)), p.label2),
                     TransferState::Offered => (format!("Waiting for {who} to accept"), format!("{}  \u{b7}  {}", t.name, size(t.size)), p.label2),
+                    TransferState::Queued => (format!("Waiting for {who} to be online"), format!("{}  \u{b7}  {}  \u{b7}  Sent when {who} is back", t.name, size(t.size)), p.orange),
                     TransferState::Hashing => (format!("Preparing {}", t.name), size(t.size), p.label2),
                     TransferState::Active => (t.name.clone(), format!("{way}  \u{b7}  {} of {}", size(t.done), size(t.size)), p.label2),
                     TransferState::Done => (t.name.clone(), format!("{way}  \u{b7}  {}  \u{b7}  Done", size(t.size)), p.green),
@@ -219,7 +220,7 @@ pub fn transfers(ui: &mut Ui, list: &[TransferInfo]) -> Option<TransferAction> {
                                 action = Some(TransferAction::Decline(t.id.clone()));
                             }
                         }
-                        TransferState::Offered | TransferState::Hashing | TransferState::Active if t.dir != Direction::ToPhone => {
+                        TransferState::Offered | TransferState::Queued | TransferState::Hashing | TransferState::Active if t.dir != Direction::ToPhone => {
                             if widgets::secondary(ui, "Cancel").clicked() {
                                 action = Some(TransferAction::Cancel(t.id.clone()));
                             }

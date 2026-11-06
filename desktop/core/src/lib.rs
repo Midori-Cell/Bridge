@@ -73,6 +73,7 @@ impl Bridge {
         let tasks = vec![
             tokio::spawn(server::serve(server::router(shared.clone()), phone_listener, phone_tls, cancel.clone())),
             tokio::spawn(server::serve(peer::router(shared.clone()), peer_listener, peer_tls, cancel.clone())),
+            tokio::spawn(peer::outbox_loop(shared.clone(), cancel.clone())),
         ];
         if discovery_on {
             match discovery::Discovery::start(&shared) {
@@ -180,19 +181,20 @@ impl Bridge {
         self.shared.notes_since(device_id, None, limit)
     }
 
-    /// Clear the conversation with one phone completely (chat and list); the other phones keep theirs.
+    /// Delete the whole conversation with one phone from this PC, so the phone loses it too (it reads its history
+    /// from here); the other phones keep theirs. The window's Clear buttons only hide (see `clear_chat`).
     pub fn clear_history(&self, device_id: &str) {
-        self.shared.clear_notes(device_id, Clear::Both);
+        self.shared.clear_notes(device_id, Clear::Both, true);
     }
 
-    /// Clear only the chat with one phone. The list "Notes and files" keeps its entries.
+    /// Hide the chat with one phone on this PC. The phone keeps its history and the list of files keeps its entries.
     pub fn clear_chat(&self, device_id: &str) {
-        self.shared.clear_notes(device_id, Clear::Chat);
+        self.shared.clear_notes(device_id, Clear::Chat, false);
     }
 
-    /// Clear only the list "Notes and files" of one phone. The chat keeps its messages.
+    /// Hide the list of files of one phone on this PC. The chat keeps its messages; the phone is not affected.
     pub fn clear_list(&self, device_id: &str) {
-        self.shared.clear_notes(device_id, Clear::List);
+        self.shared.clear_notes(device_id, Clear::List, false);
     }
 
     pub fn transfers(&self) -> Vec<TransferInfo> {

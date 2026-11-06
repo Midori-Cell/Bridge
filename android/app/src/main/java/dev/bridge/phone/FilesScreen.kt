@@ -94,6 +94,7 @@ private fun TransferRow(t: Transfer) {
     val p = LocalPalette.current
     val status = when (t.state) {
         TState.Waiting -> if (t.upload) "Waiting for the PC to accept..." else "Waiting..."
+        TState.Queued -> "Waiting for the PC to be online. It is sent when the PC is back."
         TState.Active -> "${percent(t)}% of ${sizeText(t.size)}"
         TState.Done -> if (t.upload) "Sent · ${sizeText(t.size)}" else "Saved · ${sizeText(t.size)}"
         TState.Failed -> t.error ?: "Failed"

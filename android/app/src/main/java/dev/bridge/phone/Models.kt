@@ -39,10 +39,22 @@ data class Note(
     val text: String? = null,
     val file: FileRef? = null,
     val reply: Reply? = null,
+    /** Written on this phone but not delivered yet (the PC was not reachable); it is sent as soon as the PC is back. */
+    val pending: Boolean = false,
 ) {
     val fromPc: Boolean get() = src == "pc"
     val isFile: Boolean get() = kind == "file" && file != null
 }
+
+/** A text written while the PC was not reachable. It is saved and sent as soon as the PC is online. */
+@Serializable
+data class Queued(
+    val id: String,
+    val pcId: String,
+    val text: String,
+    val replyTo: String? = null,
+    val ts: Double,
+)
 
 @Serializable
 data class NotesResponse(
@@ -77,7 +89,7 @@ data class PutResponse(val received: Long = 0, val done: Boolean = false)
 
 enum class Link { Connecting, Online, Offline }
 
-enum class TState { Waiting, Active, Done, Failed }
+enum class TState { Waiting, Queued, Active, Done, Failed }
 
 /** A file on its way, in either direction. For a download `key` is the file id. */
 data class Transfer(
@@ -90,5 +102,5 @@ data class Transfer(
     val state: TState = TState.Waiting,
     val error: String? = null,
 ) {
-    val running: Boolean get() = state == TState.Waiting || state == TState.Active
+    val running: Boolean get() = state == TState.Waiting || state == TState.Queued || state == TState.Active
 }

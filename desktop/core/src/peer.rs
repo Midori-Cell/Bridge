@@ -160,10 +160,23 @@ pub enum PeerError {
     Refused(String),
     #[error("{0}")]
     Other(String),
+    #[error("The other PC is not reachable. It is sent as soon as it is online.")]
+    Queued,
     #[error("Cancelled.")]
     Cancelled,
     #[error("The other PC declined the file.")]
     Declined,
+}
+
+/// Every few seconds: send what was waiting for a PC that is reachable now.
+pub(crate) async fn outbox_loop(shared: Arc<Shared>, cancel: tokio_util::sync::CancellationToken) {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return,
+            _ = tokio::time::sleep(Duration::from_secs(4)) => {}
+        }
+        shared.flush_outbox().await;
+    }
 }
 
 fn explain(code: &str) -> String {
@@ -361,12 +374,27 @@ impl Shared {
         file: Option<FileRef>,
         reply: Option<Reply>,
     ) -> Note {
+        self.add_peer_note_with(fp, src, kind, mid, text, file, reply, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_peer_note_with(
+        &self,
+        fp: &str,
+        src: &str,
+        kind: NoteKind,
+        mid: String,
+        text: Option<String>,
+        file: Option<FileRef>,
+        reply: Option<Reply>,
+        pending: bool,
+    ) -> Note {
         let note = {
             let mut p = lock(&self.persist);
             let id = p.next_id;
             p.next_id += 1;
             let list = p.peer_notes.entry(fp.to_string()).or_default();
-            let note = Note { id, mid, ts: now_ts(), src: src.to_string(), dev: String::new(), kind, text, file, reply, chat_hidden: false, list_hidden: false };
+            let note = Note { id, mid, ts: now_ts(), src: src.to_string(), dev: String::new(), kind, text, file, reply, chat_hidden: false, list_hidden: false, pending };
             list.push(note.clone());
             if list.len() > PEER_HISTORY {
                 let n = list.len() - PEER_HISTORY;
@@ -387,6 +415,10 @@ impl Shared {
             let Some(list) = p.peer_notes.get_mut(fp) else { return false };
             let Some(pos) = list.iter().position(|n| n.mid == mid) else { return false };
             let note = list.remove(pos);
+            // a message that was not delivered yet is not sent any more
+            if let Some(q) = p.outbox.get_mut(fp) {
+                q.retain(|x| x.id() != mid);
+            }
             if delete_files {
                 if let Some(f) = note.file.as_ref().filter(|f| f.dir == Direction::FromPeer) {
                     delete_saved_file(&self.inbox(), f);
@@ -412,7 +444,7 @@ impl Shared {
     pub(crate) fn clear_peer_notes(&self, fp: &str, what: Clear) {
         let mut p = lock(&self.persist);
         if let Some(list) = p.peer_notes.get_mut(fp) {
-            what.apply(list, |_| true);
+            what.apply(list, |_| true, true);
         }
         self.save(&p);
     }
@@ -423,6 +455,7 @@ impl Shared {
             let mut p = lock(&self.persist);
             let existed = p.peers.remove(fp).is_some();
             p.peer_notes.remove(fp);
+            p.outbox.remove(fp);
             if existed {
                 self.save(&p);
             }
@@ -743,18 +776,123 @@ impl Shared {
         // may not have the same copy of the original (older messages, or one that was cleared there).
         let reply = reply_to.and_then(|m| lock(&self.persist).peer_notes.get(fp).and_then(|list| reply_for(list, m)));
         let reply_json = reply.as_ref().map(|r| json!({ "mid": r.mid, "mine": r.src == "pc", "preview": r.preview }));
-        let (client, base) = self.connect(fp).await?;
-        let (status, body) = Self::send_json(
+        let (client, base) = match self.connect(fp).await {
+            Ok(v) => v,
+            // The other PC is off or away: the message waits here and goes out as soon as it is online.
+            Err(PeerError::Unreachable) => return Ok(self.queue_peer_text(fp, mid, text, reply, reply_json)),
+            Err(e) => return Err(e),
+        };
+        let (status, body) = match Self::send_json(
             &client,
             format!("{base}/peer/messages"),
             json!({ "text": text, "from": self.pc_name(), "mid": mid, "reply": reply_json }),
             Duration::from_secs(15),
         )
-        .await?;
+        .await
+        {
+            Ok(v) => v,
+            Err(PeerError::Unreachable) => return Ok(self.queue_peer_text(fp, mid, text, reply, reply_json)),
+            Err(e) => return Err(e),
+        };
         if !status.is_success() {
             return Err(Self::refused(status, &body));
         }
         Ok(self.add_peer_note(fp, "pc", NoteKind::Text, mid, Some(text.to_string()), None, reply))
+    }
+
+    /// Keep a message that cannot be delivered now: it shows in the chat as waiting and is sent later.
+    fn queue_peer_text(&self, fp: &str, mid: String, text: &str, reply: Option<Reply>, reply_json: Option<Value>) -> Note {
+        let note = self.add_peer_note_with(fp, "pc", NoteKind::Text, mid.clone(), Some(text.to_string()), None, reply, true);
+        let mut p = lock(&self.persist);
+        p.outbox.entry(fp.to_string()).or_default().push(Queued::Text { mid, text: text.to_string(), reply: reply_json });
+        self.save(&p);
+        note
+    }
+
+    fn queue_peer_file(&self, fp: &str, tid: &str, path: &Path) {
+        let mut p = lock(&self.persist);
+        p.outbox.entry(fp.to_string()).or_default().push(Queued::File { tid: tid.to_string(), path: path.to_string_lossy().into_owned() });
+        self.save(&p);
+    }
+
+    /// Take one waiting item off the queue. Returns whether it was still there.
+    fn unqueue(&self, fp: &str, id: &str) -> bool {
+        let mut p = lock(&self.persist);
+        let Some(q) = p.outbox.get_mut(fp) else { return false };
+        let before = q.len();
+        q.retain(|x| x.id() != id);
+        let removed = q.len() != before;
+        if q.is_empty() {
+            p.outbox.remove(fp);
+        }
+        if removed {
+            self.save(&p);
+        }
+        removed
+    }
+
+    /// A waiting message was delivered.
+    fn mark_delivered(&self, fp: &str, mid: &str) {
+        let mut p = lock(&self.persist);
+        if let Some(n) = p.peer_notes.get_mut(fp).and_then(|l| l.iter_mut().find(|n| n.mid == mid)) {
+            n.pending = false;
+        }
+        self.save(&p);
+    }
+
+    /// Stop a file that is waiting for the other PC to come online.
+    fn cancel_queued_file(&self, id: &str) -> bool {
+        let found = lock(&self.persist).outbox.iter().find(|(_, q)| q.iter().any(|x| matches!(x, Queued::File { tid, .. } if tid == id))).map(|(fp, _)| fp.clone());
+        let Some(fp) = found else { return false };
+        self.unqueue(&fp, id);
+        if let Some(mut t) = self.transfers().into_iter().find(|t| t.id == id) {
+            t.state = TransferState::Cancelled;
+            t.error = Some("Cancelled".into());
+            self.set_transfer(t);
+        }
+        true
+    }
+
+    /// Send what is waiting for the PCs that can be reached now. Runs every few seconds.
+    pub(crate) async fn flush_outbox(self: &Arc<Self>) {
+        let waiting: Vec<String> = lock(&self.persist).outbox.iter().filter(|(_, q)| !q.is_empty()).map(|(fp, _)| fp.clone()).collect();
+        for fp in waiting {
+            if !self.peer_exists(&fp) {
+                lock(&self.persist).outbox.remove(&fp);
+                continue;
+            }
+            let Ok((client, base)) = self.connect(&fp).await else { continue };
+            loop {
+                let Some(item) = lock(&self.persist).outbox.get(&fp).and_then(|q| q.first().cloned()) else { break };
+                match item {
+                    Queued::Text { mid, text, reply } => {
+                        let body = json!({ "text": text, "from": self.pc_name(), "mid": mid, "reply": reply });
+                        match Self::send_json(&client, format!("{base}/peer/messages"), body, Duration::from_secs(15)).await {
+                            Ok((status, _)) if status.is_success() => {
+                                self.unqueue(&fp, &mid);
+                                self.mark_delivered(&fp, &mid);
+                                self.emit(Event::PeersChanged);
+                            }
+                            // the other PC refuses this message for good: drop it instead of asking again and again
+                            Ok(_) => {
+                                self.unqueue(&fp, &mid);
+                                self.remove_peer_note(&fp, &mid, false);
+                            }
+                            // lost the connection again: try later
+                            Err(_) => break,
+                        }
+                    }
+                    Queued::File { tid, path } => {
+                        self.unqueue(&fp, &tid);
+                        self.forget_transfer(&tid);
+                        let (me, fp2) = (self.clone(), fp.clone());
+                        tokio::spawn(async move {
+                            let _ = me.send_peer_file(&fp2, Path::new(&path)).await;
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// Delete a message here and ask the other PC to drop it from its view too (best effort: if it is
@@ -784,7 +922,7 @@ impl Shared {
     pub(crate) fn cancel_sending(&self, id: &str) -> bool {
         match lock(&self.peer.sending).get(id) {
             Some(tx) => tx.send(true).is_ok(),
-            None => false,
+            None => self.cancel_queued_file(id),
         }
     }
 
@@ -831,6 +969,7 @@ impl Shared {
                 info.error = Some(format!("Declined by {}", dev.name));
                 self.set_transfer(info);
             }
+            Err(PeerError::Queued) => self.queue_peer_file(fp, &tid, &path),
             Err(_) => {}
         }
         result
@@ -863,6 +1002,13 @@ impl Shared {
         };
         let (client, base) = match self.connect(fp).await {
             Ok(v) => v,
+            // The other PC is off or away: the file waits and is offered as soon as it is online.
+            Err(PeerError::Unreachable) => {
+                info.state = TransferState::Queued;
+                info.error = None;
+                self.set_transfer(info);
+                return Err(PeerError::Queued);
+            }
             Err(e) => return Err(fail(self, info, e)),
         };
         let (status, body) = match Self::send_json(

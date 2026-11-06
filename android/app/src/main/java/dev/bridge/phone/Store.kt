@@ -58,6 +58,22 @@ class Store(private val context: Context) {
         get() = if (prefs.contains("time24")) prefs.getBoolean("time24", true) else android.text.format.DateFormat.is24HourFormat(context)
         set(v) = prefs.edit().putBoolean("time24", v).apply()
 
+    private val queuedList = ListSerializer(Queued.serializer())
+
+    /** Texts that wait for a PC that was not reachable, oldest first. */
+    fun outbox(): List<Queued> = prefs.getString("outbox", null)?.let { runCatching { json.decodeFromString(queuedList, it) }.getOrNull() } ?: emptyList()
+
+    fun saveOutbox(list: List<Queued>) {
+        prefs.edit().putString("outbox", json.encodeToString(queuedList, list)).apply()
+    }
+
+    /** Messages with this id or lower are hidden in the chat with this PC ("Clear chat" on this phone). */
+    fun clearedUpTo(pcId: String): Long = prefs.getLong("cleared_$pcId", 0L)
+
+    fun setClearedUpTo(pcId: String, id: Long) {
+        prefs.edit().putLong("cleared_$pcId", id).apply()
+    }
+
     var askedNotifications: Boolean
         get() = prefs.getBoolean("asked_notifications", false)
         set(v) = prefs.edit().putBoolean("asked_notifications", v).apply()

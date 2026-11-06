@@ -404,7 +404,7 @@ impl Shared {
             let mut p = lock(&self.persist);
             let mine: Vec<Note> = p.notes.iter().filter(|n| n.dev == dev).cloned().collect();
             let reply = reply_to.and_then(|m| reply_for(&mine, m));
-            let note = Note { id: p.next_id, mid, ts: now_ts(), src: src.to_string(), dev: dev.to_string(), kind, text, file, reply, chat_hidden: false, list_hidden: false };
+            let note = Note { id: p.next_id, mid, ts: now_ts(), src: src.to_string(), dev: dev.to_string(), kind, text, file, reply, chat_hidden: false, list_hidden: false, pending: false };
             p.next_id += 1;
             p.notes.push(note.clone());
             // the history limit counts per phone, so a chatty phone cannot push out another one's messages
@@ -446,13 +446,14 @@ impl Shared {
         }
     }
 
-    /// Clear the chat, the list "Notes and files" or both for the conversation with one phone (the other
-    /// phones keep theirs). The two views are independent. Only the view on this PC is cleared: the phone
-    /// keeps its own copy. A file offered to the phone stops being available once its message is gone from
-    /// both views.
-    pub fn clear_notes(&self, dev: &str, what: Clear) {
+    /// Clear the chat, the list "Files" or both for the conversation with one phone (the other phones keep
+    /// theirs). The two views are independent. This only hides messages on this PC: the phone keeps its
+    /// history, and a file offered to it stays available. Messages are removed by deleting them one by one
+    /// (for both) or by unpairing the phone.
+    pub fn clear_notes(&self, dev: &str, what: Clear, remove: bool) {
         let mut p = lock(&self.persist);
-        let gone = what.apply(&mut p.notes, |n| n.dev == dev);
+        // Without `remove` the notes stay (only hidden on this PC): the phone reads its history from here.
+        let gone = what.apply(&mut p.notes, |n| n.dev == dev, remove);
         for f in gone.iter().filter_map(|n| n.file.as_ref()) {
             p.offers.remove(&f.id);
         }
@@ -616,7 +617,7 @@ mod migration_tests {
     use crate::model::{DeviceRec, FileRef, OfferRec};
 
     fn note(id: u64, src: &str, text: &str) -> Note {
-        Note { id, mid: format!("m{id}"), ts: 0.0, src: src.into(), dev: String::new(), kind: NoteKind::Text, text: Some(text.into()), file: None, reply: None, chat_hidden: false, list_hidden: false }
+        Note { id, mid: format!("m{id}"), ts: 0.0, src: src.into(), dev: String::new(), kind: NoteKind::Text, text: Some(text.into()), file: None, reply: None, chat_hidden: false, list_hidden: false, pending: false }
     }
 
     fn device(name: &str, created: f64) -> DeviceRec {
