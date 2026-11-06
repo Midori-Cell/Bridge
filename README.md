@@ -1,6 +1,6 @@
 # Bridge
 
-Send text and files between your PC, Android phones and your other PCs, over your home network.
+Send files and text between PCs, Android phones and between PCs and Android phones over your home network.
 Connections are encrypted, nothing goes through the internet, and no account is needed.
 
 - **PC app** (Windows, macOS, Linux): a window with a chat per device, drag-and-drop files, a tray icon,
@@ -13,24 +13,22 @@ new version from the [releases page](../../releases) and install it over the old
 <table>
   <tr>
     <p align="center">
-<img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/f490a150-0ac8-4d26-97b0-4662b2f668bc" /> <img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/0b9ae41b-e0a6-4173-876c-af3ffa9efbbb" />
+<img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/f490a150-0ac8-4d26-97b0-4662b2f668bc" /> <img width="415" height="317" alt="image" src="https://github.com/user-attachments/assets/004b5dcd-5432-4233-b06e-1417e9a698e6" />
       </p>
       </tr>
 </table>
 <table>
   <tr>
     <p align="center">
-<img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/08621a44-1b0a-4343-a8a4-ebc300a7c034" /> <img width="415" height="317" alt="Pic3" src="https://github.com/user-attachments/assets/bccb030f-015a-497a-a6a6-1765091889f8" />
+<img width="415" height="317" alt="image" src="https://github.com/user-attachments/assets/1dbdc80c-2dd1-4119-ab79-c78109755a83" />
+<img width="415" height="317" alt="Pasted image 2026-11-06 06-52-00" src="https://github.com/user-attachments/assets/7447284b-94bd-4d0d-b3fb-5d22b36eac52" />
       </p>
-          </tr>
+      </tr>
 </table>
 <p align="center">
-<img width="210" height="440" alt="Screenshot_20261104-034028_Bridge" src="https://github.com/user-attachments/assets/145392a1-71d0-48ad-9d5e-1c0c759e1fcf" />
-<img width="210" height="440" alt="Screenshot_20261104-033702_Bridge" src="https://github.com/user-attachments/assets/5cc47bf4-5817-4229-9847-065363fd44f7" />
+<img width="210" height="440" alt="Screenshot_20261106-075855_Bridge" src="https://github.com/user-attachments/assets/cf9d56d3-4e8d-42be-9f90-fa14d6d5d8d5" />
+<img width="210" height="440" alt="Screenshot_20261106-075803_Bridge" src="https://github.com/user-attachments/assets/601191fc-e5db-4965-b574-ff621073195a" />
 </p>
-
-
-
 
 ## Install
 
@@ -65,37 +63,117 @@ and mDNS (UDP 5353) to find devices.
 ## Pair a phone
 
 1. On the PC choose **Pair a device > Pair a phone**. A QR code appears.
-2. On the phone open Bridge; it starts with the camera ready. Scan the code.
+2. On the phone open Bridge, choose **Pair a PC** and scan the code.
 
-To add another PC to the phone later, use *Settings > Pair another PC*. The guides for each app explain the rest:
+To add another PC or another phone later, tap the round **+** on the phone's home screen (phone to phone: both phones show a
+six-digit code, which you compare). The guides for each app explain the rest:
 [PC guide](desktop/README.md) and [Android guide](android/README.md).
 
 The QR code contains the PC's address, a one-time code and the PC's certificate fingerprint. The phone only ever talks to
-a server with exactly that certificate, so nobody else on the network can pose as your PC.
+a server with exactly that certificate, so nobody else on the network can pose as your PC. The next section explains
+what that means in detail.
 
 ## How it works and what protects it
 
-- **Local only.** Every PC runs a small server on your home network. The phone and other PCs talk to it directly. There is no
-  cloud server, no account, and no connection to the internet. Messages, files and the list of paired devices are stored
-  on your own devices only.
-- **Encrypted.** All traffic uses TLS. Each PC creates its own self-signed certificate, and its SHA-256 fingerprint is
-  that PC's identity. There is no certificate authority involved.
-- **Phones pin the PC.** The QR code carries the PC's fingerprint, and the phone refuses to talk to anything that
-  presents a different certificate. A one-time code in the QR code lets the phone pair; after that the phone uses a
-  secret token, and the PC stores only a hash of it. Several wrong codes in a row lock pairing for a while.
-- **PCs authenticate each other.** PC-to-PC traffic uses mutual TLS on its own port: both sides must present a certificate.
-  Pairing shows a six-digit number on both screens (like Bluetooth "numeric comparison"), and each PC only saves the other
-  after both users confirmed that the numbers match. Someone else on the network would have a different certificate and the
-  two numbers would differ. A PC that has not paired can only answer its name and the pairing handshake.
-- **You decide what arrives.** A PC asks before it accepts a file from a phone or another PC, and the phone asks before it
-  receives one. Text from another PC is never put on your clipboard automatically. Files are checked against a SHA-256
-  checksum, and an interrupted transfer continues where it stopped.
-- **What can be seen on the network.** To find each other, PCs announce their name and certificate fingerprint on the
-  local network (mDNS). This can be switched off in Settings. Everything else is inside the encrypted connection.
+### The short version
 
-What Bridge does **not** do: it does not protect against someone who already controls your PC, your phone, or your Wi-Fi
-router's settings, and it does not work outside your home network. If you pair by typing an address instead of scanning
-the QR code, the phone cannot check the PC's certificate by itself, so it shows the fingerprint for you to compare.
+- Every PC runs a small server on your home network. Phones and other PCs connect **directly** to it. There is no cloud
+  server, no relay, no account, and no connection to the internet.
+- Every connection is **HTTPS**: ordinary web requests (JSON, file chunks) carried inside **TLS**. Bridge has no plain-HTTP
+  port. Because the devices talk to each other directly, the TLS connection ends on your own devices, so nobody in between
+  can read it.
+- Nobody vouches for a PC's certificate. Instead each device remembers the **fingerprint** of the certificates it paired
+  with and accepts nothing else.
+- Bridge encrypts the connection, **not the files on disk** (see "What is and is not encrypted" below).
+
+### The connections
+
+| Port | Used by | TLS | How each side proves who it is |
+|---|---|---|---|
+| 8443/tcp | the Android app | server certificate only | The PC proves itself with its certificate, which the phone has pinned. The phone proves itself with a secret token. |
+| 8444/tcp | other PCs | mutual TLS (both sides present a certificate) | Both sides prove they hold the key of their certificate. The fingerprint is checked against the list of paired PCs. |
+| a port the phone picks (TCP) | other phones, and PCs talking to a phone | mutual TLS (both sides present a certificate) | Same as between PCs: each phone has its own certificate; the six digits shown on both screens while pairing are compared by you, and afterwards only that fingerprint is accepted. |
+| 5353/udp | finding devices (mDNS) | none | Only announces the device's name, fingerprint, address and port. Can be switched off in Settings. |
+
+Bridge also listens on one port on `127.0.0.1` only (the PC port plus one, normally 8445). It is not reachable from the
+network and carries no data; a second start of Bridge uses it to ask the running copy to show its window.
+Bridge does not open ports on your router (no UPnP). It listens on the addresses of your computer, so on a network you do
+not trust (a hotel or café), keep the firewall closed for Bridge.
+
+### What TLS is used here
+
+- **Versions and algorithms.** TLS 1.3 when both sides support it (the PC app and Android 10 or newer do), otherwise TLS 1.2.
+  Older versions are refused. Only key exchanges with forward secrecy (ephemeral Diffie-Hellman) and authenticated
+  encryption (AES-GCM or ChaCha20-Poly1305) are offered, so recorded traffic stays unreadable even if a key leaks later.
+  The TLS library on the PC is rustls, and Android's own TLS stack is used on the phone.
+- **Each PC has its own identity.** On the first start it creates a self-signed certificate with an ECDSA P-256 key.
+  The private key never leaves the PC. The **fingerprint** (SHA-256 of the certificate) is the PC's identity.
+- **No certificate authority.** Bridge does not use the system's list of trusted authorities, and it does not check
+  the certificate's host name or expiry date. It asks one question instead: is this exactly the certificate I paired with?
+  A change of the PC's IP address therefore never breaks a pairing, and a PC that someone sets up under the same name
+  and address is still refused. The handshake signature is verified as usual, so whoever answers must hold the matching
+  private key. If a PC's data folder is deleted, it creates a new identity and has to be paired again.
+
+### Pairing a phone
+
+1. The QR code holds `https://<address>:8443/#pair=<code>&fp=<fingerprint>`. The part after `#` is never sent over the
+   network; the app reads it from the code itself.
+2. The code is 10 characters from an alphabet of 32 (50 bits), valid for 5 minutes, and works once. Five wrong codes in a
+   row lock pairing for a minute and cancel the code that was shown.
+3. The app connects with the fingerprint pinned: if the PC presents any other certificate, the connection is dropped
+   before anything is sent. The code is exchanged for a random 256-bit **token**.
+4. The PC stores only a hash of the token. The phone keeps the token and the fingerprint in the app's private storage
+   (Android's app sandbox; backups of the app are switched off). The app refuses unencrypted connections altogether.
+   From then on every request carries the token, inside TLS.
+
+If you type the address instead of scanning, the phone does not know the fingerprint yet. It accepts the certificate it sees
+on that first connection, pins it from then on, and shows its start so you can **compare it with the one in the PC's
+Settings**. The one-time code still keeps strangers from pairing. But someone who can sit between the phone and the PC
+during that one first connection could present a certificate of their own, which is exactly what the comparison catches.
+
+For testing, the PC also serves a small page at `https://<address>:8443/` for a phone's browser. A browser cannot pin
+a fingerprint; it shows a certificate warning that you accept once, and the page holds no data until you pair it with a code.
+The Android app is the intended way.
+
+### Pairing two PCs
+
+PC-to-PC connections use mutual TLS: each PC presents its certificate and proves it holds the key. At the TLS level any
+certificate is accepted (otherwise a new PC could never start pairing), and Bridge then checks the fingerprint itself. A PC
+that is not paired can reach only the greeting (its name) and the pairing steps; every other request is refused.
+
+Pairing is a **numeric comparison**, like Bluetooth:
+
+1. The PC that starts sends a hash of a random value (a commitment). The other PC answers with a random value of its own.
+2. Only then does the first PC reveal its value, which the other PC checks against the commitment.
+3. Both PCs compute the same six-digit number from SHA-256 of both certificate fingerprints and both random values,
+   and show it.
+4. Each user checks that the numbers match and confirms. Only after both confirmed does each PC save the other's fingerprint.
+
+A third PC in the middle would have to use its own certificates, so the fingerprints, and therefore the numbers, differ.
+Because of the commitment it cannot pick its value after seeing the other, so a matching number is a one-in-a-million
+chance per attempt, and every failed attempt is visible as two different numbers. A PC accepts at most 4 open requests
+and 10 new ones per minute, and a request expires after 2 minutes.
+
+### What is and is not encrypted
+
+| | |
+|---|---|
+| **Encrypted in transit** | Everything between your devices: message text, files, file names and sizes, transfer progress, pairing, tokens. |
+| **Visible to others on the network** | That two devices are talking (addresses, ports, timing, roughly how much data moves). While discovery is on, each PC announces its name, fingerprint, address and port by mDNS. |
+| **Not encrypted on disk** | Received files are ordinary files in your inbox folder. The chat history, the list of paired devices, the hashed tokens and the settings are files in the data folder, and so is the PC's private key (readable only by your user account on Linux and macOS; on Windows protected by the permissions of your user profile). On the phone, the messages are in the app's private storage, and received files are saved in the `Download/Bridge` folder, where other apps with access to your downloads can read them. |
+| **Not provided** | Bridge has no password, PIN or app lock. Anyone who can read your data folder can copy the PC's identity. Use your system's disk encryption (BitLocker, FileVault, LUKS, Android's storage encryption) and a locked account if that matters. |
+
+### You decide what arrives
+
+A PC asks before it accepts a file from a phone or another PC, and the phone asks before it receives one. A file offer
+can be given a time limit in Settings. Text from another PC is never put on your clipboard automatically. Files are
+checked against a SHA-256 checksum, and an interrupted transfer continues where it stopped.
+
+### What Bridge does not do
+
+It does not protect against someone who already controls your PC or phone, malware on either, or an attacker who has
+your data folder. It cannot hide that your devices talk to each other, and it does not work outside your home network.
+It does not check whether you compared the numbers or the fingerprint; that step is yours.
 The protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Build from source
