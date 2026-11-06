@@ -83,8 +83,11 @@ fun AppRoot() {
     val p = LocalPalette.current
     val context = LocalContext.current
     val pcs by Bridge.pcs.collectAsState()
+    val phones by Phones.peers.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.Notes) }
-    var pairing by rememberSaveable { mutableStateOf(false) }
+    // "home", "pc" (scan a PC's QR code), "phone" (phones nearby) or "code" (compare the code with a phone)
+    var route by rememberSaveable { mutableStateOf("home") }
+    var codeId by rememberSaveable { mutableStateOf<String?>(null) }
     var choosing by remember { mutableStateOf(false) }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -93,8 +96,8 @@ fun AppRoot() {
         Bridge.messages.collect { toast(context, it) }
     }
     // once a PC is paired, ask (one time) to show the transfer notification
-    LaunchedEffect(pcs.isNotEmpty()) {
-        if (pcs.isNotEmpty() && Build.VERSION.SDK_INT >= 33 && !Bridge.askedNotifications) {
+    LaunchedEffect(pcs.isNotEmpty() || phones.isNotEmpty()) {
+        if ((pcs.isNotEmpty() || phones.isNotEmpty()) && Build.VERSION.SDK_INT >= 33 && !Bridge.askedNotifications) {
             Bridge.askedNotifications = true
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -115,9 +118,30 @@ fun AppRoot() {
         )
     }
 
-    if (pcs.isEmpty() || pairing) {
-        BackHandler(enabled = pairing) { pairing = false }
-        PairScreen(canLeave = pcs.isNotEmpty(), onDone = { pairing = false; tab = Tab.Notes }, onLeave = { pairing = false })
+    // another phone asks to pair, or wants to send a file: shown over whatever is on screen
+    IncomingPairDialog()
+    PhoneOfferDialog()
+
+    if (route == "pc") {
+        BackHandler { route = "home" }
+        PairScreen(canLeave = true, onDone = { route = "home"; tab = Tab.Notes }, onLeave = { route = "home" })
+        return
+    }
+    if (route == "phone") {
+        BackHandler { route = "home" }
+        NearbyScreen(onBack = { route = "home" }, onStarted = { id -> codeId = id; route = "code" })
+        return
+    }
+    if (route == "code") {
+        val id = codeId
+        if (id != null) {
+            BackHandler { Phones.dismissPair(id); route = "home" }
+            CodeScreen(id, onClose = { route = "home"; tab = Tab.Notes })
+            return
+        }
+    }
+    if (pcs.isEmpty() && phones.isEmpty()) {
+        WelcomeScreen(onPairPc = { route = "pc" }, onPairPhone = { route = "phone" })
         return
     }
 
@@ -125,9 +149,9 @@ fun AppRoot() {
     Column(Modifier.fillMaxSize().background(p.bg).imePadding()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (tab) {
-                Tab.Notes -> HomeScreen(onChange = { choosing = true }, onPair = { pairing = true })
+                Tab.Notes -> HomeScreen(onPair = { choosing = true })
                 Tab.Files -> FilesScreen()
-                Tab.Settings -> SettingsScreen(onPair = { pairing = true })
+                Tab.Settings -> SettingsScreen(onPair = { choosing = true })
             }
         }
         if (!keyboardOpen) {
@@ -153,33 +177,10 @@ fun AppRoot() {
     }
 
     if (choosing) {
-        val active by Bridge.active.collectAsState()
-        AlertDialog(
-            onDismissRequest = { choosing = false },
-            containerColor = p.card,
-            title = { Txt("Send to", weight = FontWeight.SemiBold) },
-            text = {
-                Column {
-                    pcs.forEach { pc ->
-                        Row(
-                            Modifier.fillMaxWidth().heightIn48().clickable(role = Role.RadioButton) {
-                                Bridge.select(pc)
-                                choosing = false
-                            },
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(p.field), contentAlignment = Alignment.Center) {
-                                Icn(R.drawable.ic_monitor, p.label, 20.dp)
-                            }
-                            Txt(pc.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (pc.id == active?.id) Icn(R.drawable.ic_check, p.tintText, 22.dp)
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextAction("Pair another PC", { choosing = false; pairing = true }) },
-            dismissButton = { TextAction("Close", { choosing = false }) },
+        PairChooseDialog(
+            onPc = { choosing = false; route = "pc" },
+            onPhone = { choosing = false; route = "phone" },
+            onClose = { choosing = false },
         )
     }
 }

@@ -47,6 +47,9 @@ import kotlinx.coroutines.withContext
 /** What another app shared with Bridge: files, or some text. */
 data class Shared(val uris: List<Uri>, val text: String?)
 
+/** Somewhere to send it: a paired PC or a paired phone. `id` is the PC's or the phone's fingerprint. */
+data class Target(val id: String, val name: String, val phone: Boolean)
+
 /** Mockup F: the sheet that opens from Android's Share menu and asks where to send. */
 class ShareActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -67,11 +70,17 @@ class ShareActivity : ComponentActivity() {
             BridgeTheme {
                 ShareSheet(
                     shared = shared,
-                    onSend = { pc ->
-                        if (shared.text != null) {
-                            Bridge.sendTextInBackground(shared.text, pc)
+                    onSend = { target ->
+                        if (target.phone) {
+                            val peer = Phones.peers.value.firstOrNull { it.fp == target.id }
+                            if (peer != null) {
+                                if (shared.text != null) Phones.sendTextInBackground(peer, shared.text) else TransferService.sendFilesTo(this, shared.uris, peer.fp)
+                            }
                         } else {
-                            TransferService.sendFiles(this, shared.uris, pc)
+                            val pc = Bridge.pcs.value.firstOrNull { it.id == target.id }
+                            if (pc != null) {
+                                if (shared.text != null) Bridge.sendTextInBackground(shared.text, pc) else TransferService.sendFiles(this, shared.uris, pc)
+                            }
                         }
                         finish()
                     },
@@ -84,16 +93,30 @@ class ShareActivity : ComponentActivity() {
             }
         }
     }
+
+    // phones can only be reached while the engine runs, which it does while this sheet is open
+    override fun onStart() {
+        super.onStart()
+        Phones.setScreen(true)
+    }
+
+    override fun onStop() {
+        Phones.setScreen(false)
+        super.onStop()
+    }
 }
 
 @Composable
-private fun ShareSheet(shared: Shared, onSend: (Pc) -> Unit, onOpenApp: () -> Unit, onClose: () -> Unit) {
+private fun ShareSheet(shared: Shared, onSend: (Target) -> Unit, onOpenApp: () -> Unit, onClose: () -> Unit) {
     val p = LocalPalette.current
     val context = androidx.compose.ui.platform.LocalContext.current
     val pcs by Bridge.pcs.collectAsState()
+    val phones by Phones.peers.collectAsState()
     val active by Bridge.active.collectAsState()
+    val activePhone by Phones.active.collectAsState()
     var chosen by remember { mutableStateOf<String?>(null) }
-    val target = pcs.firstOrNull { it.id == (chosen ?: active?.id) } ?: pcs.firstOrNull()
+    val targets = pcs.map { Target(it.id, it.name, false) } + phones.map { Target(it.fp, it.name, true) }
+    val target = targets.firstOrNull { it.id == (chosen ?: activePhone?.fp ?: active?.id) } ?: targets.firstOrNull()
 
     // what is being shared, in words
     val infos = remember(shared) { shared.uris.map { Bridge.describe(it) } }
@@ -154,30 +177,30 @@ private fun ShareSheet(shared: Shared, onSend: (Pc) -> Unit, onOpenApp: () -> Un
                 }
             }
 
-            if (pcs.isEmpty()) {
+            if (targets.isEmpty()) {
                 Panel {
-                    Txt("No PC is paired yet. Open Bridge and pair one first.", Modifier.padding(16.dp), color = p.label2)
+                    Txt("Nothing is paired yet. Open Bridge and pair a PC or a phone first.", Modifier.padding(16.dp), color = p.label2)
                 }
                 Pill("Open Bridge", onOpenApp, Modifier.fillMaxWidth(), primary = true, height = 48.dp)
             } else {
                 SectionLabel("SEND TO")
                 Panel {
-                    pcs.forEachIndexed { i, pc ->
+                    targets.forEachIndexed { i, t ->
                         if (i > 0) Sep()
                         Row(
-                            Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.RadioButton) { chosen = pc.id }.padding(horizontal = 16.dp),
+                            Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable(role = Role.RadioButton) { chosen = t.id }.padding(horizontal = 16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(p.field), contentAlignment = Alignment.Center) {
-                                Icn(R.drawable.ic_monitor, p.label, 20.dp)
+                                Icn(if (t.phone) R.drawable.ic_phone else R.drawable.ic_monitor, p.label, 20.dp)
                             }
-                            Txt(pc.name, Modifier.weight(1f), weight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            if (pc.id == target?.id) Icn(R.drawable.ic_check, p.tintText, 22.dp)
+                            Txt(t.name, Modifier.weight(1f), weight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (t.id == target?.id) Icn(R.drawable.ic_check, p.tintText, 22.dp)
                         }
                     }
                 }
-                Footnote("Files go straight to your PC over your home network. Nothing is uploaded to the internet.")
+                Footnote("Files go straight to your device over your home network. Nothing is uploaded to the internet.")
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Pill("Cancel", onClose, Modifier.weight(1f), height = 48.dp)
                     Pill(sendLabel, { target?.let(onSend) }, Modifier.weight(1.4f), primary = true, height = 48.dp)

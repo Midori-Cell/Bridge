@@ -1,6 +1,6 @@
 # Bridge for Android
 
-The phone app of [Bridge](../README.md): send text and files between your phone and your PC, over your home network.
+The phone app of [Bridge](../README.md): send text and files between your phone and your PC, or another phone, over your home network.
 It needs Android 10 or newer. The PC program is described in the [PC guide](../desktop/README.md).
 
 ## Install
@@ -11,15 +11,19 @@ allow installing from that source (your browser or file manager); confirm once. 
 Bridge asks for the **camera** (to scan the pairing QR code) and, on Android 13 and newer, for **notifications** (to show a
 transfer that is running). Nothing else.
 
-## Pair with your PC
+## Pair a device
 
-1. On the PC, open Bridge, click **Pair a device > Pair a phone**. A QR code appears.
-2. On the phone, open Bridge and point the camera at the code. That is all.
+Tap the round **+** next to the *Notes* title (or choose a device on the welcome screen) and pick **Pair a PC** or **Pair a phone**.
 
-To add another PC later, open *Settings > Pair another PC*. If the camera does not work, choose **Enter code instead** and type
-the PC's address (shown in the PC's *Settings* as "Phone address") and the code. Without the QR code the phone cannot check the
-PC's certificate on its own, so it then shows the start of the PC's fingerprint; compare it with the one in the PC's *Settings*
-and tap *It matches*.
+**A PC.** On the PC, open Bridge, click **Pair a device > Pair a phone**. A QR code appears. Point the phone's camera at it. If the
+camera does not work, choose **Enter code instead** and type the PC's address (shown in the PC's *Settings* as "Phone address") and the
+code. Without the QR code the phone cannot check the PC's certificate on its own, so it then shows the start of the PC's
+fingerprint; compare it with the one in the PC's *Settings* and tap *It matches*.
+
+**Another phone.** Both phones need Bridge 0.4 or newer and the same Wi-Fi. On the first phone choose *Pair a phone*; phones that are
+visible nearby are listed (or enter an address). Tap the other phone: it asks *"NAME wants to pair"* and both phones show
+the same six-digit code. If the codes are identical, tap *They match* on both. Only then is the connection saved. Each phone
+has its own certificate, and from then on only that exact phone is trusted.
 
 ## Using the app
 
@@ -29,11 +33,15 @@ and tap *It matches*.
 - **Long-press a message** for *Copy*, *Reply* and *Delete* (Delete removes it on the PC too). Long-press a file for *Open* or
   *Save*, and *Delete*.
 - **Links** in messages open in your browser when you tap them.
-- **Change** (next to the PC's name) switches between PCs if you paired more than one.
+- The row of **device chips** under the title switches between your PCs and phones; every device has its own chat and files.
+- **Clear chat** (right end of the status line) deletes the chat on this phone only. The phone keeps its own history, so
+  *Clear chat* on the PC never removes it here, and the other way round.
 
 **Files** shows what is on its way, with progress and *Cancel*, and every file that went back and forth.
 
-**Settings** has the phone's name, the paired PCs (tap one to make it the active one, or *Unpair*), *Pair another PC*, and
+**Settings** has the phone's name, **Visible to other phones** (lets nearby phones find this one while pairing),
+**Receive while app is closed** (keeps a small notification so Bridge can receive in the background), this phone's address,
+the paired devices with *Remove*, and
 **Appearance**: *System* (follows Android, the default), *Off* (always light) or *On* (always dark).
 
 ### Sending files from other apps
@@ -55,11 +63,19 @@ When your PC sends a file, Bridge asks **Receive a file?** with *Accept* and *De
 
 ## Limits
 
-- Bridge follows the conversation only while the app is open. It does not receive messages in the background and shows no
-  notification for them. A running file transfer continues with the screen off.
-- The phone's name is taken from Android's device name. Changing it in Settings applies the next time you pair.
+- Bridge follows the conversation with a PC only while the app is open. With **Receive while app is closed** on, a small
+  notification keeps phone-to-phone receiving alive in the background. A running file transfer continues with the screen off.
+- A phone-to-phone file that was only half received when the app is closed starts again from the beginning.
+- The other phone must be reachable at the moment you send; if it is not, text and files wait ("Waiting to send") and go out
+  when it is back.
+- The phone's name is set in *Settings*; a PC or phone you paired earlier shows the new name the next time it connects.
 - Folders cannot be sent; share files, or zip a folder first.
 
 ## Build it yourself
 
 Open the `android` folder in Android Studio, let Gradle sync, and run it on a phone.
+
+### Tests without Android
+
+`jvm-tests/run.sh` runs the chat history and the phone-to-phone engine on a plain JVM (including a conversation with the real PC
+program; build it first with `cargo build -p bridge-core --example peer_harness` in `desktop`).

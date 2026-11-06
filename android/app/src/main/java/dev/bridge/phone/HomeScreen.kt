@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -83,23 +84,21 @@ private val keepScrollInChat = object : NestedScrollConnection {
 /** Mockup N: the connection, a small chat with the PC, and the most recent items. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
+fun HomeScreen(onPair: () -> Unit) {
     val p = LocalPalette.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val pc by Bridge.active.collectAsState()
-    val link by Bridge.link.collectAsState()
-    val notes by Bridge.notes.collectAsState()
-    val transfers by Bridge.transfers.collectAsState()
+    val convo = rememberConvo()
+    val latest by rememberUpdatedState(convo)
+    val notes = convo?.notes ?: emptyList()
+    val transfers = convo?.transfers ?: emptyList()
     val saved by Bridge.saved.collectAsState()
     val time24 by Bridge.time24.collectAsState()
-    val cleared by Bridge.cleared.collectAsState()
     var text by rememberSaveable { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<Note?>(null) }
     var sending by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        val target = Bridge.active.value
-        if (target != null && uris.isNotEmpty()) TransferService.sendFiles(context, uris, target)
+        latest?.sendFiles(context, uris)
     }
     val listState = rememberLazyListState()
     val focus = LocalFocusManager.current
@@ -120,9 +119,9 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
     }
     val fadeTop by animateFloatAsState(if (listState.canScrollForward) 0.95f else 0f, label = "fadeTop")
     val fadeBottom by animateFloatAsState(if (listState.canScrollBackward) 0.95f else 0f, label = "fadeBottom")
-    val current = pc ?: return
-    // "Clear chat" hides the older messages on this phone only; the files below are not affected
-    val hiddenUpTo = cleared[current.id] ?: 0L
+    val current = convo ?: return
+    // "Clear chat" deletes the older texts on this phone only; the files below are not affected
+    val hiddenUpTo = current.hiddenUpTo
     val chat = notes.filter { it.pending || it.id > hiddenUpTo }
 
     Column(
@@ -139,31 +138,18 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
             }
         }
 
-        // connection
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(p.card).padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(p.field), contentAlignment = Alignment.Center) {
-                Icn(R.drawable.ic_monitor, p.label, 22.dp)
-            }
-            Column(Modifier.weight(1f)) {
-                Txt(current.name, weight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            TextAction("Change", onChange)
-        }
+        DeviceChips(current)
 
-        // how the PC is reached, and Clear chat at the right end of the same line
-        val (linkColor, linkLabel) = when (link) {
-            Link.Online -> p.green to "Connected · encrypted"
+        // how the device is reached, and Clear chat at the right end of the same line
+        val (linkColor, linkLabel) = when (current.link) {
+            Link.Online -> p.green to (if (current.phone) "Connected directly · encrypted" else "Connected · encrypted")
             Link.Connecting -> p.label2 to "Connecting..."
-            Link.Offline -> p.red to "PC not reachable. Messages wait and are sent when it is back."
+            Link.Offline -> p.red to (if (current.phone) "Phone not reachable. Messages wait and are sent when it is back." else "PC not reachable. Messages wait and are sent when it is back.")
         }
         Row(Modifier.fillMaxWidth().padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(Modifier.size(9.dp).clip(CircleShape).background(linkColor))
             Txt(linkLabel, Modifier.weight(1f), color = linkColor, size = 13.sp, maxLines = 2)
-            TextAction("Clear chat", { Bridge.clearChat(current) })
+            TextAction("Clear chat", { current.clear() })
         }
 
         // the chat: messages above, the note being written below
@@ -196,12 +182,12 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
                                 note = note,
                                 state = fileState(note, transfers, saved),
                                 time = if (note.pending) "Waiting to send" else if (note.ts > 0) timeText(note.ts, time24) else "",
-                                onTap = { fileTap(context, note, current, saved) },
+                                onTap = { current.tap(context, note, saved) },
                                 onCopy = { copyText(context, note.text.orEmpty()) },
                                 onReply = { replyTo = note },
                                 onDelete = {
                                     scope.launch {
-                                        Bridge.deleteNote(note)?.let { toast(context, it) }
+                                        current.delete(note)?.let { toast(context, it) }
                                     }
                                 },
                             )
@@ -250,7 +236,7 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
                         focus.clearFocus()
                         keyboard?.hide()
                         scope.launch {
-                            val error = Bridge.sendText(text, replyTo?.mid, current)
+                            val error = current.send(text, replyTo?.mid)
                             sending = false
                             if (error == null) {
                                 text = ""
@@ -271,7 +257,7 @@ fun HomeScreen(onChange: () -> Unit, onPair: () -> Unit) {
             if (recent.isEmpty()) Txt("Files you exchange with ${current.name} show up here.", Modifier.padding(16.dp), color = p.label2, size = 14.sp)
             recent.forEachIndexed { i, note ->
                 if (i > 0) Sep()
-                RecentRow(note, current, fileState(note, transfers, saved), onTap = { fileTap(context, note, current, saved) }, onCopy = { copyText(context, note.text.orEmpty()) })
+                RecentRow(note, current.name, fileState(note, transfers, saved), onTap = { current.tap(context, note, saved) }, onCopy = { copyText(context, note.text.orEmpty()) })
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -367,9 +353,9 @@ private fun MenuRow(label: String, icon: Int, color: Color, onClick: () -> Unit)
 }
 
 @Composable
-private fun RecentRow(note: Note, pc: Pc, state: FileState, onTap: () -> Unit, onCopy: () -> Unit) {
+private fun RecentRow(note: Note, deviceName: String, state: FileState, onTap: () -> Unit, onCopy: () -> Unit) {
     val p = LocalPalette.current
-    val who = if (note.fromPc) pc.name else "You"
+    val who = if (note.fromPc) deviceName else "You"
     val file = note.file
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if (file != null) {
@@ -391,5 +377,42 @@ private fun RecentRow(note: Note, pc: Pc, state: FileState, onTap: () -> Unit, o
         } else {
             TextAction("Copy", onCopy)
         }
+    }
+}
+
+/** DEVICES: every paired PC and phone as a chip; the one that is open is highlighted. */
+@Composable
+private fun DeviceChips(current: Convo) {
+    val p = LocalPalette.current
+    val pcs by Bridge.pcs.collectAsState()
+    val peers by Phones.peers.collectAsState()
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SectionLabel("DEVICES")
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            pcs.forEach { pc ->
+                val selected = !current.phone && current.id == pc.id
+                val status = if (selected) when (current.link) { Link.Online -> "Online"; Link.Connecting -> "Connecting"; Link.Offline -> "Not reachable" } else "PC"
+                Chip(R.drawable.ic_monitor, pc.name, status, selected, current.link == Link.Online && selected) { Bridge.select(pc) }
+            }
+            peers.forEach { ph ->
+                val selected = current.phone && current.id == ph.fp
+                Chip(R.drawable.ic_phone, ph.name, if (ph.online) "Online" else "Not reachable", selected, ph.online) { Phones.select(ph) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Chip(icon: Int, name: String, status: String, selected: Boolean, online: Boolean, onClick: () -> Unit) {
+    val p = LocalPalette.current
+    Column(
+        Modifier.clip(RoundedCornerShape(14.dp)).background(if (selected) p.tint.copy(alpha = 0.16f) else p.card)
+            .clickable(role = Role.RadioButton, onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icn(icon, if (selected) p.tintText else p.label, 18.dp)
+            Txt(name, color = if (selected) p.tintText else p.label, weight = if (selected) FontWeight.SemiBold else null, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 150.dp))
+        }
+        Txt(status, Modifier.padding(start = 26.dp), color = if (online) p.green else p.label2, size = 12.sp)
     }
 }

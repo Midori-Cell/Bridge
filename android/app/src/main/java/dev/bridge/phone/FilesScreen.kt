@@ -33,10 +33,12 @@ import androidx.compose.ui.unit.sp
 fun FilesScreen() {
     val p = LocalPalette.current
     val context = LocalContext.current
-    val pc by Bridge.active.collectAsState()
-    val notes by Bridge.notes.collectAsState()
-    val transfers by Bridge.transfers.collectAsState()
+    val convo = rememberConvo()
+    val pcTransfers by Bridge.transfers.collectAsState()
+    val phoneTransfers by Phones.transfers.collectAsState()
     val saved by Bridge.saved.collectAsState()
+    val transfers = pcTransfers + phoneTransfers
+    val notes = convo?.notes ?: emptyList()
     val files = notes.filter { it.isFile }.asReversed()
 
     Column(
@@ -77,10 +79,10 @@ fun FilesScreen() {
                     }
                     Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
                         Txt(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Txt("${if (note.fromPc) pc?.name ?: "PC" else "You"} · ${whenText(note.ts)}", color = p.label2, size = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Txt("${if (note.fromPc) convo?.name ?: "Device" else "You"} · ${whenText(note.ts)}", color = p.label2, size = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Txt(state.status, color = p.label2, size = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    state.action?.let { TextAction(it, { fileTap(context, note, pc, saved) }) }
+                    state.action?.let { TextAction(it, { convo?.tap(context, note, saved) }) }
                 }
             }
         }
@@ -93,8 +95,8 @@ fun FilesScreen() {
 private fun TransferRow(t: Transfer) {
     val p = LocalPalette.current
     val status = when (t.state) {
-        TState.Waiting -> if (t.upload) "Waiting for the PC to accept..." else "Waiting..."
-        TState.Queued -> "Waiting for the PC to be online. It is sent when the PC is back."
+        TState.Waiting -> if (t.upload) "Waiting for the other device to accept..." else "Waiting..."
+        TState.Queued -> "Waiting for the other device to be online. It is sent when it is back."
         TState.Active -> "${percent(t)}% of ${sizeText(t.size)}"
         TState.Done -> if (t.upload) "Sent · ${sizeText(t.size)}" else "Saved · ${sizeText(t.size)}"
         TState.Failed -> t.error ?: "Failed"

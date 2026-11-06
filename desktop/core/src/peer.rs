@@ -444,7 +444,7 @@ impl Shared {
     pub(crate) fn clear_peer_notes(&self, fp: &str, what: Clear) {
         let mut p = lock(&self.persist);
         if let Some(list) = p.peer_notes.get_mut(fp) {
-            what.apply(list, |_| true, true);
+            what.apply(list, |_| true, |_| true);
         }
         self.save(&p);
     }

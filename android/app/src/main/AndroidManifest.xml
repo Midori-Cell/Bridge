@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
@@ -57,5 +59,11 @@
             android:name=".TransferService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Only while "Receive while app is closed" is on: keeps this phone able to receive from other phones. -->
+        <service
+            android:name=".PeerService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

@@ -20,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -41,13 +42,17 @@ class TransferService : Service() {
         if (intent?.action == ACTION_SEND) {
             val clip = intent.clipData
             val uris = if (clip == null) emptyList() else (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
-            val pc = Bridge.pcs.value.firstOrNull { it.id == intent.getStringExtra(EXTRA_PC) } ?: Bridge.active.value
-            if (pc != null && uris.isNotEmpty()) Bridge.sendFiles(uris, pc)
+            val target = intent.getStringExtra(EXTRA_PC)
+            val phone = Phones.peers.value.firstOrNull { it.fp == target }
+            val pc = Bridge.pcs.value.firstOrNull { it.id == target } ?: Bridge.active.value
+            if (uris.isNotEmpty()) {
+                if (phone != null) Phones.sendFiles(uris, phone) else if (pc != null) Bridge.sendFiles(uris, pc)
+            }
         }
         if (!watching) {
             watching = true
             scope.launch {
-                Bridge.transfers.collectLatest { list ->
+                combine(Bridge.transfers, Phones.transfers) { a, b -> a + b }.collectLatest { list ->
                     val busy = list.filter { it.running }
                     if (busy.isEmpty()) {
                         delay(2000) // a new transfer may follow right away
@@ -95,13 +100,16 @@ class TransferService : Service() {
         private const val EXTRA_PC = "pc"
 
         /** Send files to a PC. They are handed over through the service so their read permission outlives the screen that got them. */
-        fun sendFiles(context: Context, uris: List<Uri>, pc: Pc) {
+        fun sendFiles(context: Context, uris: List<Uri>, pc: Pc) = sendFilesTo(context, uris, pc.id)
+
+        /** The same for a paired phone (`id` is its fingerprint). */
+        fun sendFilesTo(context: Context, uris: List<Uri>, id: String) {
             if (uris.isEmpty()) return
             val clip = ClipData.newRawUri("files", uris.first())
             uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
             val intent = Intent(context, TransferService::class.java)
                 .setAction(ACTION_SEND)
-                .putExtra(EXTRA_PC, pc.id)
+                .putExtra(EXTRA_PC, id)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             intent.clipData = clip
             ContextCompat.startForegroundService(context, intent)

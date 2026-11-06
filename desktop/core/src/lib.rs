@@ -181,18 +181,19 @@ impl Bridge {
         self.shared.notes_since(device_id, None, limit)
     }
 
-    /// Delete the whole conversation with one phone from this PC, so the phone loses it too (it reads its history
-    /// from here); the other phones keep theirs. The window's Clear buttons only hide (see `clear_chat`).
+    /// Delete the whole conversation with one phone from this PC, including what the phone has not fetched yet;
+    /// the other phones keep theirs. (The phone's own copy stays on the phone.)
     pub fn clear_history(&self, device_id: &str) {
         self.shared.clear_notes(device_id, Clear::Both, true);
     }
 
-    /// Hide the chat with one phone on this PC. The phone keeps its history and the list of files keeps its entries.
+    /// Clear the chat with one phone on this PC. Messages the phone already has are deleted here for good (it keeps
+    /// its own copy); newer ones are hidden until the phone has fetched them. Files stay in the list.
     pub fn clear_chat(&self, device_id: &str) {
         self.shared.clear_notes(device_id, Clear::Chat, false);
     }
 
-    /// Hide the list of files of one phone on this PC. The chat keeps its messages; the phone is not affected.
+    /// Clear the list of files of one phone on this PC. The chat keeps its messages; the phone is not affected.
     pub fn clear_list(&self, device_id: &str) {
         self.shared.clear_notes(device_id, Clear::List, false);
     }

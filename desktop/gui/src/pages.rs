@@ -78,7 +78,7 @@ impl App {
                 ui.label(RichText::new(format!("CHAT WITH {}", c.name.to_uppercase())).small().strong().color(palette(ui).label2));
                 widgets::trailing(ui, |ui| {
                     ui.add_space(4.0);
-                    if widgets::plain(ui, "Clear chat").on_hover_text("Empty the chat on this PC. The file list below keeps its files, and the other side keeps its copy.").clicked() {
+                    if widgets::plain(ui, "Clear chat").on_hover_text("Delete the chat on this PC. The file list below keeps its files, and the other device keeps its own copy.").clicked() {
                         if c.phone {
                             self.hub.bridge.clear_chat(&c.id);
                         } else {
@@ -250,7 +250,7 @@ impl App {
             ui.label(RichText::new("FILES").small().strong().color(palette(ui).label2));
             widgets::trailing(ui, |ui| {
                 ui.add_space(4.0);
-if widgets::plain(ui, "Clear list").on_hover_text("Empty the file list on this PC. The chat above keeps its messages, and the other side keeps its copy.").clicked() {
+if widgets::plain(ui, "Clear list").on_hover_text("Delete the file list on this PC. The chat above keeps its messages, and the other device keeps its own copy.").clicked() {
                     if c.phone {
                         self.hub.bridge.clear_list(&c.id);
                     } else {

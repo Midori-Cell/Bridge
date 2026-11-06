@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
@@ -46,6 +47,12 @@ fun SettingsScreen(onPair: () -> Unit) {
     var name by remember { mutableStateOf(Bridge.phoneName) }
     var editing by remember { mutableStateOf(false) }
     var leaving by remember { mutableStateOf<Pc?>(null) }
+    var leavingPhone by remember { mutableStateOf<dev.bridge.phone.p2p.Peer?>(null) }
+    val phones by Phones.peers.collectAsState()
+    val activePhone by Phones.active.collectAsState()
+    val visible by Phones.visibleToPhones.collectAsState()
+    val background by Phones.receiveInBackground.collectAsState()
+    val address by Phones.address.collectAsState()
     val mode by Bridge.themeMode.collectAsState()
     val time24 by Bridge.time24.collectAsState()
     val context = LocalContext.current
@@ -63,11 +70,26 @@ fun SettingsScreen(onPair: () -> Unit) {
                 Modifier.fillMaxWidth().clickable(role = Role.Button) { editing = true }.padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Txt("Name", Modifier.weight(1f))
+                Column(Modifier.weight(1f)) {
+                    Txt("Name")
+                    Txt("Shown to your other devices", color = p.label2, size = 13.sp)
+                }
                 Txt(name, color = p.label2, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            Sep()
+            SwitchRow("Visible to other phones", "Lets phones on this Wi-Fi find this one when you pair", visible) { Phones.setVisible(it) }
+            Sep()
+            SwitchRow("Receive while app is closed", "Keeps a small notification so Bridge can receive in the background", background) { Phones.setBackground(it) }
+            Sep()
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Txt("Address of this phone")
+                    Txt("For Pair by address", color = p.label2, size = 13.sp)
+                }
+                Txt(address ?: "Not on Wi-Fi", color = p.label2)
+            }
         }
-        Footnote("This is the name a PC shows for this phone. A new name is used the next time you pair; to rename a phone that is already paired, do it in Bridge on the PC.")
+        Footnote("This is the name other phones show for this phone. A PC shows the name this phone had when it was paired; rename it in Bridge on the PC.")
 
         SectionLabel("APPEARANCE")
         Panel {
@@ -115,9 +137,9 @@ fun SettingsScreen(onPair: () -> Unit) {
         }
         Footnote("How the time under each message is written, for example 21:14 or 9:14 PM.")
 
-        SectionLabel("PAIRED PCS")
+        SectionLabel("PAIRED DEVICES")
         Panel {
-            if (pcs.isEmpty()) Txt("No PC is paired.", Modifier.padding(16.dp), color = p.label2)
+            if (pcs.isEmpty() && phones.isEmpty()) Txt("Nothing is paired.", Modifier.padding(16.dp), color = p.label2)
             pcs.forEachIndexed { i, pc ->
                 if (i > 0) Sep()
                 Row(
@@ -130,22 +152,41 @@ fun SettingsScreen(onPair: () -> Unit) {
                     }
                     Column(Modifier.weight(1f)) {
                         Txt(pc.name, weight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Txt("${pc.host}:${pc.port}", color = p.label2, size = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Txt("PC · ${pc.host}:${pc.port}", color = p.label2, size = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Txt("Certificate ${shortFingerprint(pc.fingerprint)}", color = p.label2, size = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    if (pc.id == active?.id) Icn(R.drawable.ic_check, p.tintText, 22.dp)
-                    TextAction("Unpair", { leaving = pc }, color = p.red)
+                    if (pc.id == active?.id && activePhone == null) Icn(R.drawable.ic_check, p.tintText, 22.dp)
+                    TextAction("Remove", { leaving = pc }, color = p.red)
+                }
+            }
+            phones.forEachIndexed { i, ph ->
+                if (i > 0 || pcs.isNotEmpty()) Sep()
+                Row(
+                    Modifier.fillMaxWidth().clickable(role = Role.RadioButton) { Phones.select(ph) }.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(p.field), contentAlignment = Alignment.Center) {
+                        Icn(R.drawable.ic_phone, p.label, 20.dp)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Txt(ph.name, weight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Txt("Phone", color = p.label2, size = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Txt("Certificate ${shortFingerprint(ph.fp)}", color = p.label2, size = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (activePhone?.fp == ph.fp) Icn(R.drawable.ic_check, p.tintText, 22.dp)
+                    TextAction("Remove", { leavingPhone = ph }, color = p.red)
                 }
             }
         }
-        Pill("Pair another PC", onPair, Modifier.fillMaxWidth(), height = 48.dp)
-        Footnote("The certificate fingerprint is how this phone recognizes the PC. Compare it with the certificate fingerprint in Settings in Bridge on the PC if you ever want to be sure.")
+        Pill("Pair a device", onPair, Modifier.fillMaxWidth(), height = 48.dp)
+        Footnote("Removing a device also deletes your conversation with it on this phone. The certificate fingerprint is how this phone recognizes a device; compare it with the one shown on the other device if you ever want to be sure.")
 
         SectionLabel("ABOUT")
         Panel {
-            Txt("Files from a PC are saved in Downloads/Bridge.", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
+            Txt("Files you receive are saved in Downloads/Bridge.", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
             Sep()
-            Txt("Everything stays on your network. Connections are encrypted. This phone only talks to a PC whose certificate it was paired with.", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
+            Txt("Everything stays on your network. Connections between your devices are encrypted. This phone only talks to a device whose certificate it was paired with.", Modifier.padding(horizontal = 16.dp, vertical = 14.dp))
             Sep()
             Txt("Version $version", Modifier.padding(horizontal = 16.dp, vertical = 14.dp), color = p.label2)
         }
@@ -163,6 +204,7 @@ fun SettingsScreen(onPair: () -> Unit) {
                 TextAction("Save", {
                     Bridge.phoneName = draft
                     name = Bridge.phoneName
+                    Phones.nameChanged()
                     editing = false
                 })
             },
@@ -170,19 +212,47 @@ fun SettingsScreen(onPair: () -> Unit) {
         )
     }
 
+    leavingPhone?.let { ph ->
+        AlertDialog(
+            onDismissRequest = { leavingPhone = null },
+            containerColor = p.card,
+            title = { Text("Remove “${ph.name}”?", color = p.label) },
+            text = { Text("This phone forgets ${ph.name} and deletes your conversation with it here. ${ph.name} is told, and forgets this phone too. To use them together again you pair them with a new code.", color = p.label2) },
+            confirmButton = {
+                TextAction("Remove", {
+                    Phones.unpair(ph)
+                    leavingPhone = null
+                }, color = p.red)
+            },
+            dismissButton = { TextAction("Cancel", { leavingPhone = null }) },
+        )
+    }
+
     leaving?.let { pc ->
         AlertDialog(
             onDismissRequest = { leaving = null },
             containerColor = p.card,
-            title = { Text("Unpair “${pc.name}”?", color = p.label) },
+            title = { Text("Remove “${pc.name}”?", color = p.label) },
             text = { Text("This phone forgets the PC, and the PC forgets this phone. To use them together again you pair them with a new code.", color = p.label2) },
             confirmButton = {
-                TextAction("Unpair", {
+                TextAction("Remove", {
                     Bridge.unpair(pc)
                     leaving = null
                 }, color = p.red)
             },
             dismissButton = { TextAction("Cancel", { leaving = null }) },
         )
+    }
+}
+
+@Composable
+private fun SwitchRow(title: String, text: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val p = LocalPalette.current
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.weight(1f)) {
+            Txt(title)
+            Txt(text, color = p.label2, size = 13.sp)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }

@@ -286,7 +286,7 @@ impl Shared {
         let id = random_hex(6);
         {
             let mut p = lock(&self.persist);
-            p.devices.insert(id.clone(), DeviceRec { name, token_hash: hash_token(&token), created: now_ts() });
+            p.devices.insert(id.clone(), DeviceRec { name, token_hash: hash_token(&token), created: now_ts(), acked: 0 });
             self.save(&p);
         }
         self.emit(Event::DevicesChanged);
@@ -447,13 +447,32 @@ impl Shared {
     }
 
     /// Clear the chat, the list "Files" or both for the conversation with one phone (the other phones keep
-    /// theirs). The two views are independent. This only hides messages on this PC: the phone keeps its
-    /// history, and a file offered to it stays available. Messages are removed by deleting them one by one
-    /// (for both) or by unpairing the phone.
-    pub fn clear_notes(&self, dev: &str, what: Clear, remove: bool) {
+    /// theirs). The two views are independent. A phone keeps its own history, so what it has already fetched
+    /// is deleted here for good; a message it has not fetched yet is only hidden and goes as soon as the phone
+    /// has it. A file offered to the phone stays available until its message is gone. With `all`, everything
+    /// goes at once (used when the whole history is wiped).
+    pub fn clear_notes(&self, dev: &str, what: Clear, all: bool) {
         let mut p = lock(&self.persist);
-        // Without `remove` the notes stay (only hidden on this PC): the phone reads its history from here.
-        let gone = what.apply(&mut p.notes, |n| n.dev == dev, remove);
+        let acked = p.devices.get(dev).map(|d| d.acked).unwrap_or(u64::MAX);
+        let gone = what.apply(&mut p.notes, |n| n.dev == dev, |n| all || n.id <= acked);
+        for f in gone.iter().filter_map(|n| n.file.as_ref()) {
+            p.offers.remove(&f.id);
+        }
+        self.save(&p);
+    }
+
+    /// The phone `dev` has fetched every message up to `upto` (it keeps them in its own history). Messages
+    /// that were cleared on this PC in the meantime are now removed for good.
+    pub fn ack_notes(&self, dev: &str, upto: u64) {
+        let mut p = lock(&self.persist);
+        let newest = p.notes.iter().filter(|n| n.dev == dev).map(|n| n.id).max().unwrap_or(0);
+        let upto = upto.min(newest);
+        let Some(d) = p.devices.get_mut(dev) else { return };
+        if upto <= d.acked {
+            return;
+        }
+        d.acked = upto;
+        let gone = Clear::sweep(&mut p.notes, |n| n.dev == dev && n.id <= upto);
         for f in gone.iter().filter_map(|n| n.file.as_ref()) {
             p.offers.remove(&f.id);
         }
@@ -621,7 +640,7 @@ mod migration_tests {
     }
 
     fn device(name: &str, created: f64) -> DeviceRec {
-        DeviceRec { name: name.into(), token_hash: String::new(), created }
+        DeviceRec { name: name.into(), token_hash: String::new(), created, acked: 0 }
     }
 
     #[test]

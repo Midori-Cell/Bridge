@@ -153,20 +153,23 @@ pub enum Clear {
 
 impl Clear {
     /// Mark every note picked by `mine` as cleared from the chosen view(s). Messages that are not delivered yet
-    /// are never cleared. With `remove`, the ones that are now cleared from everywhere they are shown are taken
-    /// out and returned (the list shows files only, so a text is gone as soon as it is cleared from the chat).
-    /// Without it nothing is removed: the notes of a phone are the phone's own history too, which it reads from
-    /// this PC, so clearing here must only hide them here.
-    pub(crate) fn apply(self, notes: &mut Vec<Note>, mine: impl Fn(&Note) -> bool, remove: bool) -> Vec<Note> {
+    /// are never cleared. The ones that are now cleared from everywhere they are shown (and that `removable`
+    /// allows) are taken out and returned (the list shows files only, so a text is gone as soon as it is cleared
+    /// from the chat). A message `removable` refuses stays, hidden: a phone's history is also kept on the phone,
+    /// but only once the phone has fetched a message, so the PC keeps it until then.
+    pub(crate) fn apply(self, notes: &mut Vec<Note>, mine: impl Fn(&Note) -> bool, removable: impl Fn(&Note) -> bool) -> Vec<Note> {
         for n in notes.iter_mut().filter(|n| !n.pending && mine(n)) {
             n.chat_hidden |= self != Clear::List;
             n.list_hidden |= self != Clear::Chat;
         }
-        if !remove {
-            return Vec::new();
-        }
-        let (gone, keep): (Vec<Note>, Vec<Note>) =
-            std::mem::take(notes).into_iter().partition(|n| n.chat_hidden && (n.list_hidden || n.file.is_none()));
+        Clear::sweep(notes, |n| mine(n) && removable(n))
+    }
+
+    /// Take out (and return) the notes picked by `pick` that are hidden everywhere they are shown.
+    pub(crate) fn sweep(notes: &mut Vec<Note>, pick: impl Fn(&Note) -> bool) -> Vec<Note> {
+        let (gone, keep): (Vec<Note>, Vec<Note>) = std::mem::take(notes)
+            .into_iter()
+            .partition(|n| pick(n) && n.chat_hidden && (n.list_hidden || n.file.is_none()));
         *notes = keep;
         gone
     }
@@ -203,6 +206,10 @@ pub(crate) struct DeviceRec {
     pub name: String,
     pub token_hash: String,
     pub created: f64,
+    /// The newest message the phone has fetched (and so keeps in its own history). Clearing the conversation on
+    /// this PC may delete messages up to here for good; newer ones are only hidden until the phone has them.
+    #[serde(default)]
+    pub acked: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

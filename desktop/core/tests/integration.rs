@@ -1425,7 +1425,7 @@ fn views(h: &H, dev: &str) -> (Vec<String>, Vec<String>) {
 }
 
 #[tokio::test]
-async fn clearing_on_the_pc_only_hides_and_the_phone_keeps_its_whole_history() {
+async fn clearing_hides_what_the_phone_has_not_fetched_yet() {
     let mut h = H::new().await;
     let a = h.pair_as("Pixel").await;
     let b = h.pair_as("Galaxy").await;
@@ -1454,6 +1454,29 @@ async fn clearing_on_the_pc_only_hides_and_the_phone_keeps_its_whole_history() {
 
     // the other phone is untouched
     assert_eq!(views(&h, &b.id), (vec!["other phone".into()], vec!["other phone".into()]));
+}
+
+#[tokio::test]
+async fn clearing_deletes_for_good_what_the_phone_has_fetched() {
+    let h = H::new().await;
+    let a = h.pair_as("Pixel").await;
+    h.b().send_text(&a.id, "one").unwrap();
+    h.b().send_text(&a.id, "two").unwrap();
+    // the phone fetches both and asks for what is after them: it keeps them in its own history now
+    let first = h.notes(&a).await;
+    let last = first.last().unwrap()["id"].as_u64().unwrap();
+    h.b().send_text(&a.id, "three").unwrap(); // not fetched yet
+    let (st, v) = h.get(&format!("/api/notes?since={last}"), &a).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(v["notes"].as_array().unwrap().len(), 1);
+    h.b().clear_chat(&a.id);
+    // "one" and "two" are gone from the PC for good; "three" is not acknowledged yet, so it is only hidden
+    assert_eq!(h.notes(&a).await.len(), 1);
+    assert_eq!(h.notes(&a).await[0]["text"], "three");
+    // the phone asks again from "three" on: now that one goes too
+    let l3 = h.notes(&a).await[0]["id"].as_u64().unwrap();
+    let _ = h.get(&format!("/api/notes?since={l3}"), &a).await;
+    assert_eq!(h.notes(&a).await.len(), 0);
 }
 
 #[tokio::test]

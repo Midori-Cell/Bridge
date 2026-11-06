@@ -53,9 +53,10 @@ name or last message. **Settings** is at the bottom.
 - **Times and days:** every message shows its time at the bottom right (hover for the full date), and a line with *Today*, *Yesterday*, the weekday or the date starts each day. Settings > Time format switches between 24-hour and 12-hour.
 - **Files**, below the chat, lists the files you sent and received with *Open* and *Show folder* (texts are only in the chat).
 - **Clear chat** (above the chat) and **Clear list** (above Files) work independently: clearing one leaves the
-  other as it is. They only hide things on this PC. The other device keeps everything: a phone reads its history
-  from this PC, so its messages stay stored here (hidden) until you delete them one by one or unpair the phone.
-  Messages to another PC that were not delivered yet are never cleared. Files you received stay in your inbox folder.
+  other as it is. They delete on this PC only; the other device keeps its own copy. A phone keeps its history on the
+  phone, so what it has already fetched is really deleted here. A note the phone has not fetched yet stays hidden
+  until it has (it is deleted at the next Clear). Messages to another PC or phone that were not delivered yet are never
+  cleared. Files you received stay in your inbox folder.
 - **When the other PC is off:** a message to another PC is kept (shown as "Waiting to send") and a file shows
   "Waiting for NAME to be online". Both are saved and go out by themselves a few seconds after that PC is reachable
   again, also after this program was restarted. Delete the message or press *Cancel* on the file to take it back.

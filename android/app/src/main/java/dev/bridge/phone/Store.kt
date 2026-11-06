@@ -1,5 +1,6 @@
 package dev.bridge.phone
 
+import android.app.Application
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
@@ -9,7 +10,7 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 
 /** Everything the app remembers, in the app's private storage (no backup, see the manifest). */
-class Store(private val context: Context) {
+class Store(private val context: Application) {
     private val prefs = context.getSharedPreferences("bridge", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
     private val pcList = ListSerializer(Pc.serializer())
@@ -72,6 +73,36 @@ class Store(private val context: Context) {
 
     fun setClearedUpTo(pcId: String, id: Long) {
         prefs.edit().putLong("cleared_$pcId", id).apply()
+    }
+
+    // ---- phone to phone
+
+    /** Lets other phones on the Wi-Fi find this one while pairing. */
+    var visibleToPhones: Boolean
+        get() = prefs.getBoolean("visible_to_phones", true)
+        set(v) = prefs.edit().putBoolean("visible_to_phones", v).apply()
+
+    /** Keep Bridge able to receive from other phones when the app is closed (a small notification stays). */
+    var receiveInBackground: Boolean
+        get() = prefs.getBoolean("receive_in_background", false)
+        set(v) = prefs.edit().putBoolean("receive_in_background", v).apply()
+
+    /** The port this phone listens on for other phones; the same one each time so paired phones find it again. */
+    var p2pPort: Int
+        get() = prefs.getInt("p2p_port", Phones.DEFAULT_PORT)
+        set(v) = prefs.edit().putInt("p2p_port", v).apply()
+
+    /** The phone whose chat is open (fingerprint), or null while a PC's chat is open. */
+    var activePhone: String?
+        get() = prefs.getString("active_phone", null)
+        set(v) = prefs.edit().putString("active_phone", v).apply()
+
+    /** Per phone: messages up to this id are hidden in the chat ("Clear chat" on this phone). */
+    fun phoneCleared(): Map<String, Long> =
+        prefs.all.filterKeys { it.startsWith("pcleared_") }.mapNotNull { (k, v) -> (v as? Long)?.let { k.removePrefix("pcleared_") to it } }.toMap()
+
+    fun setPhoneCleared(fp: String, id: Long) {
+        prefs.edit().apply { if (id <= 0) remove("pcleared_$fp") else putLong("pcleared_$fp", id) }.apply()
     }
 
     var askedNotifications: Boolean

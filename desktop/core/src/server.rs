@@ -226,6 +226,10 @@ async fn notes_get(
         if !s.device_exists(&dev.id) {
             return Err(ApiError::unauthorized()); // unpaired while waiting
         }
+        // the phone asks for what comes after `since`, so it has stored everything up to there
+        if let Some(sn) = since {
+            s.ack_notes(&dev.id, sn);
+        }
         let notes: Vec<Note> = s.notes_since(&dev.id, since, 100).iter().map(Note::for_phone).collect();
         let (deleted, del) = s.deleted_since(&dev.id, del_seen.unwrap_or(u64::MAX));
         let remaining = deadline.saturating_duration_since(Instant::now());

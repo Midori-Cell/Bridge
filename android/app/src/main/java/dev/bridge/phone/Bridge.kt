@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.core.net.toUri
 import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
@@ -31,6 +32,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import okhttp3.OkHttpClient
 import java.io.IOException
 import java.io.InputStream
@@ -59,6 +62,7 @@ object Bridge {
 
     private lateinit var app: Application
     private lateinit var store: Store
+    private lateinit var history: History
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _pcs = MutableStateFlow<List<Pc>>(emptyList())
@@ -115,9 +119,11 @@ object Bridge {
     fun init(application: Application) {
         app = application
         store = Store(application)
+        history = History(java.io.File(application.filesDir, "history"))
         _saved.value = store.saved()
         _themeMode.value = store.themeMode
         _time24.value = store.time24
+        Phones.init(application, store)
         reload()
         _cleared.value = _pcs.value.associate { it.id to store.clearedUpTo(it.id) }
         if (store.outbox().isNotEmpty()) ensureFlusher()
@@ -125,6 +131,16 @@ object Bridge {
 
     private fun say(text: String) {
         _messages.tryEmit(text)
+    }
+
+    /** A short message for the user (shown as a toast), for code outside this object. */
+    fun tell(text: String) = say(text)
+
+    /** A file that came from another phone was saved in Downloads/Bridge. */
+    fun markSaved(fileId: String, uri: String) {
+        val map = _saved.value + (fileId to uri)
+        store.saveSaved(map)
+        _saved.value = map
     }
 
     private fun reload() {
@@ -196,6 +212,7 @@ object Bridge {
     }
 
     fun select(pc: Pc) {
+        Phones.select(null)
         store.activeId = pc.id
         reload()
         restartPoll()
@@ -209,14 +226,20 @@ object Bridge {
                 api(pc).unpair()
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (ignored: Exception) {
                 // the PC can be unpaired from its own window later
             }
             forget(pc)
         }
     }
 
+    /** What the chat with this PC shows: this phone's own history, then the texts that wait to be sent. */
+    private fun refresh(pcId: String) {
+        if (_active.value?.id == pcId) _notes.value = history.notes(pcId) + pendingNotes(pcId)
+    }
+
     private fun forget(pc: Pc) {
+        history.forget(pc.id)
         _offers.update { l -> l.filter { it.pc.id != pc.id } }
         val rest = _pcs.value.filter { it.id != pc.id }
         store.savePcs(rest)
@@ -238,6 +261,7 @@ object Bridge {
     /** The app is on screen (true) or not (false): the feed is only followed while it is visible. */
     fun setVisible(value: Boolean) {
         visible = value
+        Phones.setScreen(value)
         if (value) restartPoll() else pollJob?.cancel()
     }
 
@@ -252,16 +276,17 @@ object Bridge {
     private suspend fun poll(start: Pc) {
         var pc = start
         var api = api(pc)
-        var lastId: Long? = null
-        var del: Long? = null
+        // this phone keeps its own history: carry on from where the last visit ended
+        var lastId: Long? = history.cursor(pc.id).first
+        var del: Long? = history.cursor(pc.id).second.takeIf { lastId != null }
         var fails = 0
-        if (notesPc != pc.id) {
-            _notes.value = emptyList()
-            notesPc = pc.id
-        }
+        notesPc = pc.id
+        refresh(pc.id)
         _link.value = Link.Connecting
         try {
             myName = api.ping().device.ifBlank { null }
+            // the PC answered, so it is connected: say so now instead of after the first long wait for news
+            _link.value = Link.Online
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -269,17 +294,20 @@ object Bridge {
                 unpaired(pc)
                 return
             }
+            if (e is IOException) _link.value = Link.Offline
         }
+        var quick = true // the first fetch does not wait for news, later ones do
         while (true) {
             currentCoroutineContext().ensureActive()
             val failed = try {
                 val first = lastId == null
-                val r = if (first) api.notes(null, null, 0) else api.notes(lastId, del, POLL_SECONDS)
+                val r = if (first) api.notes(null, null, 0) else api.notes(lastId, del, if (quick) 0 else POLL_SECONDS)
                 // another phone paired with the same PC writes into the same history; only this phone's part is shown
                 val mine = myName
                 val news = r.notes.filter { mine == null || it.src == "pc" || it.src == mine }
                 val gone = r.deleted.toSet()
-                _notes.update { old -> ((if (first) emptyList() else old) + news + pendingNotes(pc.id)).distinctBy { it.id }.filter { it.mid !in gone }.sortedBy { it.id }.takeLast(500) }
+                history.merge(pc.id, news, gone, r.lastId, r.del)
+                refresh(pc.id)
 
                 // files the PC sent since the last visit are offered now (the phone user decides); the older history is left alone
                 val seen = store.seen(pc.id) ?: r.lastId
@@ -291,6 +319,7 @@ object Bridge {
                 lastId = if (before == null) r.lastId else maxOf(before, r.lastId)
                 del = r.del
                 _link.value = Link.Online
+                quick = false
                 fails = 0
                 false
             } catch (e: CancellationException) {
@@ -301,7 +330,7 @@ object Bridge {
                     return
                 }
                 true
-            } catch (e: Exception) {
+            } catch (ignored: Exception) {
                 true
             }
             if (failed) {
@@ -318,7 +347,7 @@ object Bridge {
                         continue
                     }
                 }
-                delay(minOf(1000L shl minOf(fails, 4), 15_000L))
+                delay(minOf(1000L shl minOf(fails, 4), 15_000L).milliseconds)
             }
         }
     }
@@ -330,7 +359,7 @@ object Bridge {
 
     /** The PC cannot be reached (off, away, other network), as opposed to a PC that answered "no". */
     private fun isOffline(e: Throwable): Boolean =
-        e is IOException && e !is ApiException && generateSequence(e) { it.cause }.none { it.message?.contains("not the PC that was paired") == true }
+        e is IOException && e !is ApiException && generateSequence<Throwable>(e) { it.cause }.none { it.message?.contains("not the PC that was paired") == true }
 
     private fun pendingNote(q: Queued) = Note(id = PENDING_BASE + (q.ts * 1000).toLong(), mid = q.id, ts = q.ts, src = myName ?: "phone", kind = "text", text = q.text, pending = true)
 
@@ -340,7 +369,7 @@ object Bridge {
     private fun enqueue(pc: Pc, text: String, replyTo: String?) {
         val q = Queued(id = "pending-" + UUID.randomUUID().toString().take(12), pcId = pc.id, text = text, replyTo = replyTo, ts = System.currentTimeMillis() / 1000.0)
         store.saveOutbox(store.outbox() + q)
-        if (pc.id == _active.value?.id) _notes.update { (it + pendingNote(q)).distinctBy { n -> n.id }.sortedBy { n -> n.id } }
+        refresh(pc.id)
         ensureFlusher()
     }
 
@@ -350,7 +379,7 @@ object Bridge {
             while (store.outbox().isNotEmpty()) {
                 flushOutbox()
                 if (store.outbox().isEmpty()) break
-                delay(5000)
+                delay(5.seconds)
             }
         }
     }
@@ -367,7 +396,8 @@ object Bridge {
                 try {
                     val note = api(pc).sendNote(q.text, q.replyTo)
                     store.saveOutbox(store.outbox().filter { it.id != q.id })
-                    if (pc.id == _active.value?.id) _notes.update { l -> (l.filter { it.mid != q.id } + note).distinctBy { n -> n.id }.sortedBy { n -> n.id } }
+                    history.add(pc.id, note)
+                    refresh(pc.id)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: ApiException) {
@@ -378,7 +408,7 @@ object Bridge {
                     // the PC refuses this text for good: do not ask again and again
                     dropQueued(q)
                     say(explain(e))
-                } catch (e: Exception) {
+                } catch (ignored: Exception) {
                     return // not reachable yet: keep the order and try again later
                 }
             }
@@ -387,7 +417,7 @@ object Bridge {
 
     private fun dropQueued(q: Queued) {
         store.saveOutbox(store.outbox().filter { it.id != q.id })
-        _notes.update { l -> l.filter { it.mid != q.id } }
+        refresh(q.pcId)
     }
 
     /** Returns an error text, or null when the note was sent or is waiting to be sent. */
@@ -400,7 +430,8 @@ object Bridge {
         }
         try {
             val note = api(pc).sendNote(text, replyTo)
-            if (pc.id == _active.value?.id) _notes.update { (it + note).distinctBy { n -> n.id }.sortedBy { n -> n.id } }
+            history.add(pc.id, note)
+            refresh(pc.id)
             null
         } catch (e: CancellationException) {
             throw e
@@ -422,24 +453,30 @@ object Bridge {
         }
     }
 
-    /** Hide the chat with this PC on this phone. Nothing is deleted: the PC keeps everything, and so does the list of files. */
+    /**
+     * Clear the chat with this PC on this phone: the texts are deleted from this phone for good (the PC keeps or
+     * clears its own copy as its user wishes). Files stay in the list of files; their bubbles are hidden in the chat.
+     */
     fun clearChat(pc: Pc) {
-        val top = _notes.value.filter { !it.pending }.maxOfOrNull { it.id } ?: return
+        val top = history.notes(pc.id).maxOfOrNull { it.id } ?: return
         store.setClearedUpTo(pc.id, top)
         _cleared.update { it + (pc.id to top) }
+        history.clearTexts(pc.id, top)
+        refresh(pc.id)
     }
 
     suspend fun deleteNote(note: Note): String? = withContext(Dispatchers.IO) {
         // a text that was not delivered yet is simply taken back
         if (note.pending) {
             outboxGate.withLock { store.saveOutbox(store.outbox().filter { it.id != note.mid }) }
-            _notes.update { l -> l.filter { it.id != note.id } }
+            _active.value?.id?.let { refresh(it) }
             return@withContext null
         }
         val pc = _active.value ?: return@withContext "Pair a PC first."
         try {
             api(pc).deleteNote(note.mid)
-            _notes.update { l -> l.filter { it.id != note.id } }
+            history.remove(pc.id, note.id)
+            refresh(pc.id)
             null
         } catch (e: CancellationException) {
             throw e
@@ -475,7 +512,7 @@ object Bridge {
                 }
             }
             if (size < 0) app.contentResolver.openAssetFileDescriptor(uri, "r")?.use { size = it.length }
-        } catch (e: Exception) {
+        } catch (ignored: Exception) {
             // keep the defaults; the upload fails with a clear message if the file cannot be read
         }
         return name to maxOf(size, 0L)
@@ -519,7 +556,7 @@ object Bridge {
                     queued = true
                     change(key) { it.copy(state = TState.Queued) }
                 }
-                delay(5000)
+                delay(5.seconds)
             }
         }
         if (queued) change(key) { it.copy(state = TState.Waiting) }
@@ -535,7 +572,7 @@ object Bridge {
             var state = created.state
             // the PC's user decides first; nothing is sent until the PC says yes
             while (state == "pending") {
-                delay(1000)
+                delay(1.seconds)
                 state = api.fileStatus(created.id).state
             }
             if (state == "declined" || state == "cancelled") throw ApiException(409, state)
@@ -579,12 +616,12 @@ object Bridge {
                 } catch (e: IOException) {
                     val fatal = e is ApiException && (e.status in listOf(401, 404, 413, 422, 507) || (e.status == 409 && e.code != "offset_mismatch" && e.code != "busy"))
                     if (fatal || ++fails > 6) throw e
-                    delay(1000L * fails)
+                    delay((1000L * fails).milliseconds)
                     // ask the PC how far it got and go on from there
                     val received = api.fileStatus(id).received
-                    when {
-                        received == pos -> {}
-                        received == pos + data.size -> {
+                    when (received) {
+                        pos -> {}
+                        pos + data.size -> {
                             pos = received
                             chunk = null
                         }
@@ -627,7 +664,7 @@ object Bridge {
 
     // ------------------------------------------------------------------ receiving files
 
-    private fun mimeOf(name: String): String =
+    fun mimeOf(name: String): String =
         MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
 
     /** Save a file the PC offers into Downloads/Bridge. */
@@ -636,7 +673,7 @@ object Bridge {
         _transfers.update { l -> l.filter { it.key != file.id } + Transfer(file.id, pc.id, file.name, file.size, upload = false) }
         try {
             ContextCompat.startForegroundService(app, Intent(app, TransferService::class.java))
-        } catch (e: Exception) {
+        } catch (ignored: Exception) {
             // the app is in the background: the download still runs, only without the notification
         }
         track(file.id, scope.launch(start = CoroutineStart.LAZY) { downloadGate.withLock { fetch(file, pc) } })
@@ -677,7 +714,7 @@ object Bridge {
                         throw e
                     } catch (e: IOException) {
                         if (e is ApiException || ++attempts > 5) throw e
-                        delay(1000L * attempts) // the download goes on from where it stopped
+                        delay((1000L * attempts).milliseconds) // the download goes on from where it stopped
                     }
                 }
             }
@@ -702,10 +739,10 @@ object Bridge {
     /** Open a saved file with whatever app the user has for it. */
     fun open(context: Context, file: FileRef) {
         val saved = _saved.value[file.id] ?: return
-        val uri = Uri.parse(saved)
+        val uri = saved.toUri()
         val exists = try {
             context.contentResolver.query(uri, arrayOf(MediaStore.Downloads._ID), null, null, null)?.use { it.moveToFirst() } ?: false
-        } catch (e: Exception) {
+        } catch (ignored: Exception) {
             false
         }
         if (!exists) {
@@ -719,21 +756,24 @@ object Bridge {
         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mimeOf(file.name)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
             context.startActivity(intent)
-        } catch (e: ActivityNotFoundException) {
+        } catch (ignored: ActivityNotFoundException) {
             say("No app on this phone can open ${file.name}. It is in Downloads/Bridge.")
         }
     }
 
     fun cancel(key: String) {
         running[key]?.cancel()
+        Phones.cancel(key)
     }
 
     fun dismiss(key: String) {
         _transfers.update { l -> l.filter { it.key != key || it.running } }
+        Phones.dismiss(key)
     }
 
     fun clearFinished() {
         _transfers.update { l -> l.filter { it.running } }
+        Phones.clearFinished()
     }
 
     // ------------------------------------------------------------------ errors in words
@@ -752,7 +792,7 @@ object Bridge {
                 else -> "The PC answered: ${e.code}."
             }
         }
-        if (generateSequence(e) { it.cause }.any { it.message?.contains("not the PC that was paired") == true }) {
+        if (generateSequence<Throwable>(e) { it.cause }.any { it.message?.contains("not the PC that was paired") == true }) {
             return "This PC's identity has changed since it was paired. Unpair it and pair again only if you trust the change."
         }
         if (e is Problem) return e.message ?: "Something went wrong."
