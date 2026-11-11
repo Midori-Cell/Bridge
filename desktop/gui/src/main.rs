@@ -13,7 +13,9 @@ mod hub;
 mod icon;
 mod icons;
 mod minimize;
+mod notify;
 mod pages;
+mod pictures;
 mod session;
 mod shortcut;
 mod single;
@@ -50,9 +52,16 @@ struct Args {
     /// Network interface to listen on
     #[arg(long, default_value = "0.0.0.0")]
     bind: std::net::IpAddr,
-    /// Start with the window hidden (only when a tray icon is available)
+    /// Start with the window hidden in the tray (only when a tray icon is available)
     #[arg(long)]
     hidden: bool,
+    /// Start with the window minimized (to the taskbar or the Dock), also where there is no tray icon
+    #[arg(long, alias = "start-minimized")]
+    minimized: bool,
+    /// Files dropped on the program's icon (or its shortcut) arrive here. They are not sent anywhere: the
+    /// window just comes to the front (a copy that is already running is asked to do so).
+    #[arg(value_name = "FILE", hide = true)]
+    _dropped: Vec<PathBuf>,
 }
 
 fn fatal(message: &str) -> ! {
@@ -99,14 +108,18 @@ fn main() {
         single::serve(listener, hub.clone());
     }
 
-    let icon = egui::IconData { rgba: icon::rgba(64), width: 64, height: 64 };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Bridge")
+        .with_app_id("bridge")
+        .with_inner_size([1040.0, 760.0])
+        .with_min_inner_size([720.0, 520.0]);
+    // On a Mac the icon comes from the app bundle (rounded, all sizes). Setting one here would replace it in the
+    // Dock and in the app switcher with a small square picture.
+    if !cfg!(target_os = "macos") {
+        viewport = viewport.with_icon(egui::IconData { rgba: icon::rgba(256), width: 256, height: 256 });
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Bridge")
-            .with_app_id("bridge")
-            .with_inner_size([1040.0, 760.0])
-            .with_min_inner_size([720.0, 520.0])
-            .with_icon(icon),
+        viewport,
         event_loop_builder: session.event_loop_hook(),
         ..Default::default()
     };
@@ -150,6 +163,7 @@ fn main() {
     }
 
     let start_hidden = args.hidden;
+    let start_minimized = args.minimized;
     let hub2 = hub.clone();
     let result = eframe::run_native(
         "Bridge",
@@ -179,6 +193,9 @@ fn main() {
             if start_hidden && hub2.tray_ok.load(std::sync::atomic::Ordering::SeqCst) {
                 hub2.hidden.store(true, std::sync::atomic::Ordering::SeqCst);
                 cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+            if start_minimized && !start_hidden {
+                cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
             Ok(Box::new(app::App::new(hub2, keep, ask_folder)))
         }),

@@ -1176,3 +1176,55 @@ async fn the_queue_survives_a_restart_and_waiting_items_can_be_taken_back() {
     assert!(!got.iter().any(|n| n.text.as_deref() == Some("never mind")), "the deleted message is not sent");
     assert!(!got.iter().any(|n| n.file.is_some()), "the stopped file is not sent");
 }
+
+#[tokio::test]
+async fn a_paired_pc_shows_as_online_without_anything_being_sent() {
+    let (mut a, b) = (Pc::new("Desk").await, Pc::new("Laptop").await);
+    let (a_to_b, _) = pair(&a, &b).await;
+    a.restart().await; // a fresh start knows nothing about who is there
+    assert!(!a.b.peers().iter().any(|p| p.online), "nobody has been asked yet");
+
+    // opening the chat asks right away
+    a.b.check_peer(&a_to_b);
+    eventually("B is seen as online after a direct look", || a.b.peers().into_iter().find(|p| p.id == a_to_b && p.online)).await;
+
+    // and without anyone looking, the background check finds it within a few seconds
+    a.restart().await;
+    let mut seen = false;
+    for _ in 0..80 {
+        if a.b.peers().iter().any(|p| p.id == a_to_b && p.online) {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(seen, "the background check never marked B online");
+}
+
+#[tokio::test]
+async fn a_picture_between_pcs_arrives_with_its_preview_and_waits_for_a_yes() {
+    let (a, b) = (Pc::new("Desk").await, Pc::new("Laptop").await);
+    b.b.set_auto_accept_files(false);
+    let (a_to_b, b_to_a) = pair(&a, &b).await;
+    let p = a.tmp.path().join("view.png");
+    image::RgbImage::from_fn(200, 100, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 40])).save(&p).unwrap();
+    let a2 = a.b.clone();
+    let send = tokio::spawn(async move { a2.send_peer_file(&a_to_b, &p).await });
+
+    // B sees an offer that carries the preview; the picture itself has not been fetched
+    let offer = eventually("offer with preview on B", || b.b.transfers().into_iter().find(|t| t.thumb.is_some())).await;
+    assert_eq!(offer.state, TransferState::Offered);
+    assert!(bridge_core::thumb::valid(offer.thumb.as_deref().unwrap()));
+    assert!(std::fs::read_dir(b.inbox()).map(|d| d.count()).unwrap_or(0) == 0, "nothing downloaded yet");
+
+    assert!(b.b.accept_file(&offer.id).await);
+    send.await.unwrap().unwrap();
+    let notes = eventually("picture note on B", || {
+        let n = b.b.peer_notes(&b_to_a, 10);
+        n.iter().any(|x| x.file.is_some()).then_some(n)
+    })
+    .await;
+    let f = notes.iter().find_map(|n| n.file.as_ref()).unwrap();
+    assert!(f.thumb.is_some());
+    assert!(std::path::Path::new(f.local_path.as_deref().unwrap()).exists());
+}

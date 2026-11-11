@@ -3,6 +3,29 @@ import dev.bridge.phone.p2p.*
 import java.io.File
 import java.net.InetAddress
 
+
+/** A picture file (PNG) and the preview a phone would make for it. */
+class PicSource(private val file: File, private val thumbText: String?) : FileSource {
+    override val name: String get() = file.name
+    override val size: Long get() = file.length()
+    override fun open(offset: Long): java.io.InputStream = java.io.FileInputStream(file).also { it.skipNBytes(offset) }
+    override fun thumb(): String? = thumbText
+}
+
+fun makePicture(file: File, w: Int, h: Int) {
+    val img = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    for (x in 0 until w) for (y in 0 until h) img.setRGB(x, y, ((x * 255 / w) shl 16) or ((y * 255 / h) shl 8) or 90)
+    javax.imageio.ImageIO.write(img, "png", file)
+}
+
+fun jpegPreview(w: Int, h: Int): String {
+    val img = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    for (x in 0 until w) for (y in 0 until h) img.setRGB(x, y, (x * 5 shl 16) or (y * 5 shl 8) or 60)
+    val out = java.io.ByteArrayOutputStream()
+    javax.imageio.ImageIO.write(img, "jpg", out)
+    return Thumb.encode(out.toByteArray())
+}
+
 fun check(c: Boolean, m: String) { if (!c) throw AssertionError(m) }
 fun waitFor(what: String, ms: Long = 15000, f: () -> Boolean) {
     val end = System.currentTimeMillis() + ms
@@ -15,7 +38,8 @@ val lo: InetAddress = InetAddress.getLoopbackAddress()
 class Dev(val dir: File, val name: String, port: Int = 0, val auto: Boolean = false, val finder: Finder = Finder { emptyList() }) {
     val id = Identity.loadOrCreate(File(dir, "id.bin"))
     val received = java.util.concurrent.CopyOnWriteArrayList<File>()
-    val e = PeerEngine(dir, id, { name }, finder, { null }, { auto }, {}, { _, _, f -> received.add(f) }, lo, port)
+    val texts = java.util.concurrent.CopyOnWriteArrayList<String>()
+    val e = PeerEngine(dir, id, { name }, finder, { null }, { auto }, {}, { _, _, f -> received.add(f) }, lo, port, onText = { _, from, t -> texts.add("$from: $t") })
     val port = e.start()
 }
 
@@ -62,6 +86,7 @@ fun main() {
     check(n1 != null && !n1.pending, "sent")
     waitFor("B got it") { b.e.notes(afp).any { it.text == "hello Bob" } }
     val got = b.e.notes(afp).first { it.text == "hello Bob" }
+    check(b.texts.toList() == listOf("Alice phone: hello Bob"), "text callback ${b.texts}")
     check(got.fromPc && got.mid == n1!!.mid, "side + mid")
     b.e.sendText(afp, "hi Alice", got.mid)
     waitFor("A got reply") { a.e.notes(bfp).any { it.text == "hi Alice" } }
@@ -102,6 +127,33 @@ fun main() {
     check(b.e.notes(afp).any { it.isFile && it.file?.dir == "to_phone" && it.file?.name == "photo.bin" }, "note on B")
     check(a.e.notes(bfp).any { it.isFile && it.file?.dir == "to_pc" }, "note on A")
     println("file ok")
+
+    // --- pictures: a small preview goes with the offer, nothing else is downloaded before the user accepts
+    val pic = File(da, "view.png"); makePicture(pic, 200, 120)
+    val preview = jpegPreview(48, 29)
+    check(Thumb.valid(preview), "own preview is valid")
+    val ptid = a.e.sendFile(bfp, PicSource(pic, preview), null)
+    waitFor("picture offer on B") { b.e.transfers().any { it.id == ptid && it.state == XState.Offered } }
+    check(b.e.transfers().first { it.id == ptid }.thumb == preview, "preview arrived with the offer")
+    check(a.e.transfers().first { it.id == ptid }.thumb == preview, "sender keeps it too")
+    check(b.e.inboxFile(ptid) == null, "nothing downloaded yet")
+    check(b.e.acceptFile(ptid), "accept picture")
+    waitFor("picture done") { b.e.transfers().firstOrNull { it.id == ptid }?.state == XState.Done && a.e.transfers().firstOrNull { it.id == ptid }?.state == XState.Done }
+    check(b.e.notes(afp).first { it.file?.id == ptid }.file?.thumb == preview, "preview kept in the chat note on B")
+    check(a.e.notes(bfp).first { it.file?.id == ptid }.file?.thumb == preview, "and on A")
+    // survives a restart (it is in the saved history)
+    b.e.stop(); b = Dev(db, "Bob phone", b.port)
+    check(b.e.notes(afp).first { it.file?.id == ptid }.file?.thumb == preview, "preview persisted")
+    // a preview that is not a small JPEG is dropped; the offer still works
+    val pic2 = File(da, "odd.png"); makePicture(pic2, 20, 20)
+    for (bad in listOf("AAAA", "not base64!!", Thumb.encode(ByteArray(100) { 1 }), jpegPreview(300, 300))) {
+        val t2 = a.e.sendFile(bfp, PicSource(pic2, bad), null)
+        waitFor("odd offer on B") { b.e.transfers().any { it.id == t2 && it.state == XState.Offered } }
+        check(b.e.transfers().first { it.id == t2 }.thumb == null, "bad preview dropped: ${bad.take(12)}")
+        b.e.declineFile(t2)
+        waitFor("declined") { a.e.transfers().first { it.id == t2 }.state == XState.Declined }
+    }
+    println("pictures ok")
 
     // declined file
     val tid2 = a.e.sendFile(bfp, FileOnDisk(src), null)

@@ -3,6 +3,29 @@ import dev.bridge.phone.p2p.*
 import java.io.*
 import java.net.InetAddress
 
+
+/** A picture file (PNG) and the preview a phone would make for it. */
+class PicSource(private val file: File, private val thumbText: String?) : FileSource {
+    override val name: String get() = file.name
+    override val size: Long get() = file.length()
+    override fun open(offset: Long): java.io.InputStream = java.io.FileInputStream(file).also { it.skipNBytes(offset) }
+    override fun thumb(): String? = thumbText
+}
+
+fun makePicture(file: File, w: Int, h: Int) {
+    val img = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    for (x in 0 until w) for (y in 0 until h) img.setRGB(x, y, ((x * 255 / w) shl 16) or ((y * 255 / h) shl 8) or 90)
+    javax.imageio.ImageIO.write(img, "png", file)
+}
+
+fun jpegPreview(w: Int, h: Int): String {
+    val img = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    for (x in 0 until w) for (y in 0 until h) img.setRGB(x, y, (x * 5 shl 16) or (y * 5 shl 8) or 60)
+    val out = java.io.ByteArrayOutputStream()
+    javax.imageio.ImageIO.write(img, "jpg", out)
+    return Thumb.encode(out.toByteArray())
+}
+
 fun check(c: Boolean, m: String) { if (!c) throw AssertionError(m) }
 fun waitFor(what: String, ms: Long = 20000, f: () -> Boolean) {
     val end = System.currentTimeMillis() + ms
@@ -90,6 +113,21 @@ fun main(args: Array<String>) {
     check(ph.received[0].readBytes().contentEquals(data.copyOf(2_500_000)), "phone has the file intact")
     waitFor("pc says done") { pc.many("transfers").any { it.contains("Done") && it.contains("from-pc.bin") } }
     println("file PC->phone ok")
+
+    // --- pictures both ways: the preview that one program makes is accepted by the other
+    val png = File(dp, "phone-photo.png"); makePicture(png, 320, 200)
+    val pt = ph.e.sendFile(pcfp, PicSource(png, jpegPreview(48, 30)), null)
+    waitFor("PC saw the picture offer with preview") { pc.many("transfers").any { it.contains("phone-photo.png") && it.endsWith("thumb=1") } }
+    waitFor("picture sent", 30000) { ph.e.transfers().first { it.id == pt }.state == XState.Done }
+    val pcPng = File(pc.dir, "pc-photo.png"); makePicture(pcPng, 400, 250)
+    check(pc.one("file $pfp ${pcPng.path}") == "OK started", "picture started")
+    waitFor("picture offer with the PC's preview on the phone") { ph.e.transfers().any { it.incoming && it.name == "pc-photo.png" && it.thumb != null } }
+    val px = ph.e.transfers().first { it.incoming && it.name == "pc-photo.png" }
+    check(Thumb.valid(px.thumb!!) && Thumb.dimensions(Thumb.decode(px.thumb!!)!!) == (48 to 30), "PC preview is 48x30: ${Thumb.dimensions(Thumb.decode(px.thumb!!)!!)}")
+    check(ph.e.inboxFile(px.id) == null, "not downloaded before the phone user accepts")
+    check(ph.e.acceptFile(px.id), "accept")
+    waitFor("pc picture arrived", 30000) { ph.e.notes(pcfp).any { it.file?.name == "pc-photo.png" && it.file?.thumb != null } }
+    println("pictures ok")
 
     // --- the PC is away from the phone's point of view / the phone is away from the PC's: text waits on the PC side
     ph.e.stop(); Thread.sleep(300)

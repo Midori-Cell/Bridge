@@ -206,7 +206,28 @@ pub fn transfers(ui: &mut Ui, list: &[TransferInfo]) -> Option<TransferAction> {
                     TransferState::Cancelled => (t.error.clone().unwrap_or_else(|| "Cancelled".into()), t.name.clone(), p.label2),
                 };
                 ui.horizontal(|ui| {
-                    widgets::icon_badge(ui, Icon::File);
+                    // a picture: its blurred preview instead of the file icon; on an offer, a click on it accepts
+                    if let Some(pic) = t.thumb.as_ref().filter(|_| t.state != TransferState::Done).and_then(|_| crate::pictures::show(ui.ctx(), &t.id, None, t.thumb.as_deref(), true)) {
+                        let wants = t.state == TransferState::Offered && incoming(t);
+                        let scale = (96.0f32 / pic.aspect.x.max(pic.aspect.y).max(1.0)).min(8.0);
+                        let size = egui::vec2((pic.aspect.x * scale).max(48.0), (pic.aspect.y * scale).max(36.0));
+                        let (rect, resp) = ui.allocate_exact_size(size, if wants { Sense::click() } else { Sense::hover() });
+                        let radius = egui::CornerRadius::same(10);
+                        egui::Image::new(egui::load::SizedTexture::new(pic.id, size)).corner_radius(radius).paint_at(ui, rect);
+                        ui.painter().rect_filled(rect, radius, Color32::from_white_alpha(30));
+                        if wants {
+                            let label = ui.painter().layout_no_wrap("Click to download".to_owned(), egui::FontId::proportional(11.0), Color32::WHITE);
+                            let pill = egui::Rect::from_center_size(rect.center(), label.size() + egui::vec2(14.0, 8.0));
+                            ui.painter().rect_filled(pill, egui::CornerRadius::same(9), Color32::from_black_alpha(140));
+                            ui.painter().galley(pill.min + egui::vec2(7.0, 4.0), label, Color32::WHITE);
+                            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Download the picture");
+                            if resp.clicked() {
+                                action = Some(TransferAction::Accept(t.id.clone()));
+                            }
+                        }
+                    } else {
+                        widgets::icon_badge(ui, Icon::File);
+                    }
                     ui.vertical(|ui| {
                         ui.add(egui::Label::new(RichText::new(title).strong()).truncate());
                         ui.add(egui::Label::new(RichText::new(sub).small().color(sub_color)).truncate());

@@ -270,7 +270,8 @@ async fn files_create(State(s): State<Arc<Shared>>, Auth(dev): Auth, JsonBody(b)
         Some(Value::String(v)) => Some(v.clone()),
         Some(_) => return Err(ApiError::bad_request("bad_sha256")),
     };
-    let out = s.create_incoming(&dev, name, size, sha).await?;
+    let thumb = b.get("thumb").and_then(Value::as_str).map(str::to_string);
+    let out = s.create_incoming(&dev, name, size, sha, thumb).await?;
     let file = out.file.map(|mut f| {
         f.local_path = None;
         f

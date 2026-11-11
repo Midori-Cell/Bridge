@@ -27,7 +27,10 @@ class Convo(
         if (peer != null) Phones.sendText(peer, text, replyTo) else Bridge.sendText(text, replyTo, pc)
 
     suspend fun delete(note: Note): String? =
-        if (peer != null) Phones.deleteNote(peer, note) else Bridge.deleteNote(note)
+        if (note.isOffer) {
+            note.file?.let { Phones.answerPicture(it.id, false) } // "Decline" on a picture that was offered
+            null
+        } else if (peer != null) Phones.deleteNote(peer, note) else Bridge.deleteNote(note)
 
     fun clear() {
         if (peer != null) Phones.clearChat(peer) else if (pc != null) Bridge.clearChat(pc)

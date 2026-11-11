@@ -15,7 +15,7 @@ run() { # compile the app sources plus one test file, then run it
   local t="$1"; shift
   rm -rf "$out"/*
   java -cp "$compiler" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -no-reflect -cp "$CP" -d "$out" \
-    "$app/Models.kt" "$app/History.kt" "$app/p2p/Identity.kt" "$app/p2p/Tls.kt" "$app/p2p/Net.kt" "$app/p2p/PeerEngine.kt" "$here/$t.kt" 2>&1 | grep -v "^warning" || true
+    "$app/Models.kt" "$app/History.kt" "$app/p2p/Identity.kt" "$app/p2p/Tls.kt" "$app/p2p/Net.kt" "$app/p2p/Thumb.kt" "$app/p2p/PeerEngine.kt" "$here/$t.kt" 2>&1 | grep -v "^warning" || true
   echo "== $t"; java -cp "$out:$CP" "${t}Kt" "$@"
 }
 for t in HistoryTest NetTest EngineTest; do run "$t"; done

@@ -515,6 +515,28 @@ if widgets::plain(ui, "Clear list").on_hover_text("Delete the file list on this 
         widgets::footnote(ui, "With Enter, Shift+Enter starts a new line. With the other choices, Enter starts a new line.");
         widgets::footnote(ui, "A file you send to another PC is withdrawn when nobody accepts it within this many seconds. 0 means no limit: it waits until the other person answers (the other PC drops an unanswered request after 15 minutes anyway).");
         widgets::footnote(ui, "When asking is on, a phone or PC that wants to send a file waits until you accept it. Text from other PCs is never copied to the clipboard automatically.");
+        widgets::section(ui, "NOTIFICATIONS");
+        widgets::grouped(ui, |g| {
+            g.row(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Show a popup for new messages and files");
+                    widgets::trailing(ui, |ui| widgets::switch(ui, &mut s.notify_popup));
+                });
+            });
+            g.row(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Play a sound");
+                    widgets::trailing(ui, |ui| widgets::switch(ui, &mut s.notify_sound));
+                });
+            });
+            g.row(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Make the icon blink");
+                    widgets::trailing(ui, |ui| widgets::switch(ui, &mut s.notify_blink));
+                });
+            });
+        });
+        widgets::footnote(ui, "Only while the Bridge window is not in front. The icon blinks in the taskbar or Dock and, with a tray icon, in the tray, until you open Bridge. The popup and the sound come from the system (on Linux notify-send and the sound theme).");
         if s != before {
             let hotkey_changed = s.hotkey != before.hotkey || s.hotkey_enabled != before.hotkey_enabled;
             self.hub.change_settings(|x| *x = s);

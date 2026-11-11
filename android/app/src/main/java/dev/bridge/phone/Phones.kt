@@ -15,7 +15,6 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import dev.bridge.phone.p2p.FileOnDisk
 import dev.bridge.phone.p2p.Finder
 import dev.bridge.phone.p2p.FileSource
 import dev.bridge.phone.p2p.Identity
@@ -167,7 +166,13 @@ object Phones {
             openRef = { ref -> sourceFor(ref) },
             autoAccept = { false },
             onChange = { refresh() },
-            onFileReceived = { _, note, file -> saved(note, file) },
+            onFileReceived = { fp, note, file ->
+                saved(note, file)
+                if (!screenOn) Notifier.message(_peers.value.firstOrNull { it.fp == fp }?.name ?: "Phone", "File: " + (note.file?.name ?: ""))
+            },
+            onText = { fp, from, text ->
+                if (!screenOn) Notifier.message(from.ifBlank { _peers.value.firstOrNull { it.fp == fp }?.name ?: "Phone" }, text)
+            },
             wantedPort = port,
         )
         val wanted = store.p2pPort
@@ -220,7 +225,10 @@ object Phones {
             _active.value = list.firstOrNull { it.fp == current.fp }
         }
         val act = _active.value
-        _notes.value = if (e != null && act != null) e.notes(act.fp) else emptyList()
+        val xs = e?.transfers() ?: emptyList()
+        // pictures that are offered or on their way show in the chat (blurred) before they are in the history
+        val pictures = if (act == null) emptyList() else xs.filter { it.incoming && it.thumb != null && it.peerFp == act.fp && (it.state == XState.Offered || it.state == XState.Queued || it.state == XState.Active) }
+        _notes.value = if (e != null && act != null) e.notes(act.fp) + pictures.map { offerNote(it) } else emptyList()
         _link.value = when {
             act == null -> Link.Connecting
             act.online -> Link.Online
@@ -234,11 +242,12 @@ object Phones {
             _nearby.value = emptyList()
             return
         }
-        val xs = e.transfers()
         _transfers.value = xs.map { it.toTransfer() } + synchronized(copying) { copying.toList() }
         val offers = xs.filter { it.incoming && it.state == XState.Offered }
-        val fresh = offers.filter { o -> _offers.value.none { it.id == o.id } }
-        _offers.value = offers
+        knownOffers.retainAll(offers.map { it.id }.toSet())
+        val fresh = offers.filter { knownOffers.add(it.id) }
+        // a picture is not asked about in a dialog: it shows in the chat and is fetched when it is tapped
+        _offers.value = offers.filter { it.thumb == null }
         val reqs = e.pairRequests()
         val newReq = reqs.filter { r -> !r.accepted && _requests.value.none { it.id == r.id } }
         _requests.value = reqs
@@ -247,7 +256,7 @@ object Phones {
         _nearby.value = synchronized(nearbyMap) { nearbyMap.values.filter { it.fp !in paired }.sortedBy { it.name.lowercase() } }
         if (!screenOn) {
             newReq.firstOrNull()?.let { notify("${it.name} wants to pair", "Open Bridge to compare the code.") }
-            fresh.firstOrNull()?.let { notify("${it.peerName} wants to send you a file", it.name) }
+            fresh.firstOrNull()?.let { Notifier.message("${it.peerName} wants to send you a file", it.name) }
         }
         // copies made for files that waited for an offline phone are not needed any more
         copies.entries.removeAll { (tid, file) ->
@@ -256,6 +265,14 @@ object Phones {
             if (over) file.delete()
             over
         }
+    }
+
+    private val knownOffers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val offerSeen = java.util.concurrent.ConcurrentHashMap<String, Double>()
+
+    private fun offerNote(x: Xfer): Note {
+        val ts = offerSeen.getOrPut(x.id) { System.currentTimeMillis() / 1000.0 }
+        return Note(OFFER_BASE + (x.id.hashCode().toLong() and 0xFFFFFFL), x.id, ts, "pc", "file", null, FileRef(x.id, x.name, x.size, "", "to_phone", x.thumb))
     }
 
     private fun Xfer.toTransfer() = Transfer(
@@ -351,7 +368,7 @@ object Phones {
                         } finally {
                             synchronized(copying) { copying.remove(marker) }
                         }
-                        val tid = e.sendFile(peer.fp, FileOnDisk(copy), "file:" + copy.path)
+                        val tid = e.sendFile(peer.fp, PictureFile(app, copy), "file:" + copy.path)
                         copies[tid] = copy
                     }
                 } catch (ex: PeerFailure) {
@@ -364,7 +381,7 @@ object Phones {
     }
 
     private fun sourceFor(ref: String): FileSource? = when {
-        ref.startsWith("file:") -> File(ref.removePrefix("file:")).takeIf { it.isFile }?.let { FileOnDisk(it) }
+        ref.startsWith("file:") -> File(ref.removePrefix("file:")).takeIf { it.isFile }?.let { PictureFile(app, it) }
         ref.startsWith("content:") -> UriSource(app, Uri.parse(ref))
         else -> null
     }
@@ -379,6 +396,14 @@ object Phones {
 
     fun clearFinished() {
         _transfers.value.filter { !it.running }.forEach { engine?.dismissTransfer(it.key) }
+    }
+
+    /** Tapped (or declined) in the chat: a picture another phone offers. */
+    fun answerPicture(id: String, accept: Boolean) {
+        scope.launch {
+            val e = engine ?: return@launch
+            if (accept) e.acceptFile(id) else e.declineFile(id)
+        }
     }
 
     fun answer(offer: Xfer, accept: Boolean) {
@@ -487,6 +512,7 @@ object Phones {
             PeerService.stop(app)
             if (!screenOn) stop()
         }
+        Bridge.backgroundChanged()
     }
 
     /** The name was changed: tell nearby phones. */
@@ -523,6 +549,8 @@ object Phones {
     // ------------------------------------------------------------------ a file from another app
 
     private class UriSource(private val context: Context, private val uri: Uri) : FileSource {
+        override fun thumb(): String? = Thumbs.make(context, uri)
+        override fun keepPreview(id: String) = Thumbs.keep(context, id, uri)
         private val meta: Pair<String, Long> by lazy {
             var name = "file"
             var size = -1L

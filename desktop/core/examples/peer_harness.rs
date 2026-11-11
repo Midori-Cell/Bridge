@@ -104,7 +104,7 @@ async fn main() {
             }
             "transfers" => {
                 for t in b.transfers() {
-                    println!("XFER {} {:?} {:?} {} {}/{}", t.id, t.dir, t.state, t.name, t.done, t.size);
+                    println!("XFER {} {:?} {:?} {} {}/{} thumb={}", t.id, t.dir, t.state, t.name, t.done, t.size, u8::from(t.thumb.is_some()));
                 }
                 println!("END");
             }

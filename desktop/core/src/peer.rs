@@ -20,7 +20,7 @@
 //! A man in the middle has two different certificates, so the two screens show different codes, and
 //! because A committed to `na` before seeing `nb`, he cannot steer them to match.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -53,6 +53,8 @@ const PEER_HISTORY: usize = 200;
 const UPLOAD_CHUNK: usize = 4 * 1024 * 1024;
 const MAX_RETRIES: u32 = 6;
 const ONLINE_WINDOW: Duration = Duration::from_secs(60);
+/// A paired PC that was not heard from for this long is looked at by the background check.
+const PROBE_AFTER: Duration = Duration::from_secs(12);
 const PROTOCOL: u32 = 1;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -129,6 +131,8 @@ pub(crate) struct PeerState {
     wake: watch::Sender<u64>,
     rate: Mutex<VecDeque<Instant>>,
     last_ok: Mutex<HashMap<String, Instant>>,
+    /// PCs being looked for right now by the background check (so slow ones are not asked twice at once).
+    probing: Mutex<HashSet<String>>,
     /// Files this PC is sending, by transfer id: send `true` to cancel.
     sending: Mutex<HashMap<String, watch::Sender<bool>>>,
     pub discovery: Mutex<Option<crate::discovery::Discovery>>,
@@ -143,6 +147,7 @@ impl Default for PeerState {
             wake: watch::channel(0).0,
             rate: Mutex::new(VecDeque::new()),
             last_ok: Mutex::new(HashMap::new()),
+            probing: Mutex::new(HashSet::new()),
             sending: Mutex::new(HashMap::new()),
             discovery: Mutex::new(None),
         }
@@ -176,6 +181,7 @@ pub(crate) async fn outbox_loop(shared: Arc<Shared>, cancel: tokio_util::sync::C
             _ = tokio::time::sleep(Duration::from_secs(4)) => {}
         }
         shared.flush_outbox().await;
+        shared.probe_peers();
     }
 }
 
@@ -853,6 +859,40 @@ impl Shared {
         true
     }
 
+    /// Is this paired PC reachable right now? Reflects in `peers()` and tells the window when that changed.
+    /// Used by the background check and when the user opens the PC's chat.
+    pub(crate) fn probe_peer(self: &Arc<Self>, fp: &str) {
+        if !self.peer_exists(fp) || !lock(&self.peer.probing).insert(fp.to_string()) {
+            return;
+        }
+        let (me, fp) = (self.clone(), fp.to_string());
+        tokio::spawn(async move {
+            let before = me.peer_online(&fp);
+            let _ = me.connect(&fp).await;
+            lock(&me.peer.probing).remove(&fp);
+            if me.peer_online(&fp) != before {
+                me.emit(Event::PeersChanged);
+            }
+        });
+    }
+
+    /// Every few seconds: look at the paired PCs that were not heard from lately, so the list shows who is online
+    /// without anything being sent first.
+    pub(crate) fn probe_peers(self: &Arc<Self>) {
+        let stale: Vec<String> = {
+            let ids: Vec<String> = lock(&self.persist).peers.keys().cloned().collect();
+            let ok = lock(&self.peer.last_ok);
+            ids.into_iter().filter(|id| ok.get(id).map_or(true, |t| t.elapsed() > PROBE_AFTER)).collect()
+        };
+        for fp in stale {
+            self.probe_peer(&fp);
+        }
+    }
+
+    fn peer_online(&self, fp: &str) -> bool {
+        lock(&self.peer.last_ok).get(fp).is_some_and(|t| t.elapsed() < ONLINE_WINDOW)
+    }
+
     /// Send what is waiting for the PCs that can be reached now. Runs every few seconds.
     pub(crate) async fn flush_outbox(self: &Arc<Self>) {
         let waiting: Vec<String> = lock(&self.persist).outbox.iter().filter(|(_, q)| !q.is_empty()).map(|(fp, _)| fp.clone()).collect();
@@ -947,6 +987,7 @@ impl Shared {
             device: dev.name.clone(),
             device_id: fp.to_string(),
             error: None,
+            thumb: None,
         };
         self.set_transfer(info.clone());
         let (tx, rx) = watch::channel(false);
@@ -992,14 +1033,15 @@ impl Shared {
         };
 
         let p = path.to_path_buf();
-        let hashing = tokio::task::spawn_blocking(move || hash_file(&p));
-        let sha = tokio::select! {
+        let hashing = tokio::task::spawn_blocking(move || hash_file(&p).map(|h| (h, crate::thumb::make(&p))));
+        let (sha, thumb) = tokio::select! {
             _ = cancelled(&mut cancel) => return Err(PeerError::Cancelled),
             h = hashing => match h {
                 Ok(Ok(h)) => h,
                 _ => return Err(fail(self, info, PeerError::Other("Cannot read the file.".into()))),
             },
         };
+        info.thumb = thumb.clone();
         let (client, base) = match self.connect(fp).await {
             Ok(v) => v,
             // The other PC is off or away: the file waits and is offered as soon as it is online.
@@ -1014,7 +1056,7 @@ impl Shared {
         let (status, body) = match Self::send_json(
             &client,
             format!("{base}/peer/files"),
-            json!({ "id": tid, "name": name, "size": size, "sha256": sha }),
+            json!({ "id": tid, "name": name, "size": size, "sha256": sha, "thumb": thumb }),
             Duration::from_secs(15),
         )
         .await
@@ -1054,7 +1096,7 @@ impl Shared {
         info.done = size;
         info.state = TransferState::Done;
         self.set_transfer(info);
-        let fref = FileRef { id: tid.clone(), name, size, sha256: sha, dir: Direction::ToPeer, local_path: Some(path.to_string_lossy().into_owned()) };
+        let fref = FileRef { id: tid.clone(), name, size, sha256: sha, dir: Direction::ToPeer, local_path: Some(path.to_string_lossy().into_owned()), thumb };
         self.add_peer_note(fp, "pc", NoteKind::File, tid, None, Some(fref.clone()), None);
         Ok(fref)
     }
@@ -1461,7 +1503,9 @@ async fn hello(State(s): State<Arc<Shared>>, AnyPeer(fp): AnyPeer) -> Json<Value
     Json(json!({ "name": s.pc_name(), "protocol": PROTOCOL, "paired": s.peer_exists(&fp) }))
 }
 
-async fn ping(State(s): State<Arc<Shared>>, TrustedPeer(_dev): TrustedPeer) -> Json<Value> {
+async fn ping(State(s): State<Arc<Shared>>, TrustedPeer(dev): TrustedPeer) -> Json<Value> {
+    // the other PC just asked, so it is there
+    s.touch_peer(&dev.id);
     Json(json!({ "ok": true, "name": s.pc_name(), "protocol": PROTOCOL }))
 }
 
@@ -1588,7 +1632,8 @@ async fn files_create(State(s): State<Arc<Shared>>, TrustedPeer(dev): TrustedPee
         Some(Value::String(v)) => Some(v.clone()),
         Some(_) => return Err(ApiError::bad_request("bad_id")),
     };
-    let out = s.create_incoming_for(&dev, true, name, size, sha, want_id).await?;
+    let thumb = b.get("thumb").and_then(Value::as_str).map(str::to_string);
+    let out = s.create_incoming_for(&dev, true, name, size, sha, want_id, thumb).await?;
     Ok(Json(json!({ "id": out.id, "name": out.name, "offset": 0, "done": out.done, "state": out.state })))
 }
 

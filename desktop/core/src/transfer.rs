@@ -62,6 +62,8 @@ pub(crate) struct Incoming {
     pub busy: bool,
     pub state: InState,
     pub created: f64,
+    /// The preview that came with the offer (a picture), already checked.
+    pub thumb: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -75,6 +77,8 @@ struct Sidecar {
     size: u64,
     sha256: Option<String>,
     created: f64,
+    #[serde(default)]
+    thumb: Option<String>,
 }
 
 pub struct CreateOut {
@@ -163,6 +167,7 @@ impl Shared {
             device: i.device_name.clone(),
             device_id: i.device_id.clone(),
             error: error.map(str::to_string),
+            thumb: i.thumb.clone(),
         }
     }
 
@@ -174,8 +179,9 @@ impl Shared {
         name: &str,
         size: u64,
         sha: Option<String>,
+        thumb: Option<String>,
     ) -> Result<CreateOut, ApiError> {
-        self.create_incoming_for(dev, false, name, size, sha, None).await
+        self.create_incoming_for(dev, false, name, size, sha, None, thumb).await
     }
 
     /// `peer`: the sender is a paired PC, so the finished file is announced in that PC's conversation.
@@ -191,6 +197,7 @@ impl Shared {
         size: u64,
         sha: Option<String>,
         want_id: Option<String>,
+        thumb: Option<String>,
     ) -> Result<CreateOut, ApiError> {
         if size > self.cfg.max_file_size {
             return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "file_too_large"));
@@ -228,6 +235,8 @@ impl Shared {
             busy: false,
             state: InState::Pending,
             created: now_ts(),
+            // only a small, well-formed JPEG is kept; anything else is dropped without failing the offer
+            thumb: thumb.filter(|t| crate::thumb::valid(t)),
         };
         let info = self.upload_info(&item, TransferState::Offered, 0, None);
         lock(&self.incoming).insert(id.clone(), item);
@@ -264,6 +273,7 @@ impl Shared {
                 size: it.size,
                 sha256: it.claimed_sha.clone(),
                 created: it.created,
+                thumb: it.thumb.clone(),
             }
         };
         let dir = incoming_dir(&self.cfg);
@@ -524,11 +534,11 @@ impl Shared {
 
     /// All bytes are on disk: verify, move into the inbox, announce.
     async fn finalize(self: &Arc<Self>, id: &str) -> Result<FileRef, ApiError> {
-        let (dev_name, name, size, claimed, peer, dev_id) = {
+        let (dev_name, name, size, claimed, peer, dev_id, thumb) = {
             let mut inc = lock(&self.incoming);
             let it = inc.get_mut(id).ok_or_else(ApiError::not_found)?;
             it.state = InState::Finalizing;
-            (it.device_name.clone(), it.name.clone(), it.size, it.claimed_sha.clone(), it.peer, it.device_id.clone())
+            (it.device_name.clone(), it.name.clone(), it.size, it.claimed_sha.clone(), it.peer, it.device_id.clone(), it.thumb.clone())
         };
         let part = part_path(&self.cfg, id);
 
@@ -585,11 +595,11 @@ impl Shared {
         self.set_transfer(info);
         let local_path = Some(dest.to_string_lossy().into_owned());
         if peer {
-            let fref = FileRef { id: id.to_string(), name: final_name, size, sha256: hash, dir: Direction::FromPeer, local_path };
+            let fref = FileRef { id: id.to_string(), name: final_name, size, sha256: hash, dir: Direction::FromPeer, local_path, thumb };
             self.add_peer_note(&dev_id, &dev_name, NoteKind::File, id.to_string(), None, Some(fref.clone()), None);
             return Ok(fref);
         }
-        let fref = FileRef { id: id.to_string(), name: final_name, size, sha256: hash, dir: Direction::ToPc, local_path };
+        let fref = FileRef { id: id.to_string(), name: final_name, size, sha256: hash, dir: Direction::ToPc, local_path, thumb };
         self.add_file_note(&dev_id, &dev_name, fref.clone());
         Ok(fref)
     }
@@ -671,6 +681,7 @@ impl Shared {
                 busy: false,
                 state: InState::Receiving,
                 created: side.created,
+                thumb: side.thumb.filter(|t| crate::thumb::valid(t)),
             };
             let info = self.upload_info(&item, TransferState::Interrupted, received, None);
             known.push(item.id.clone());
@@ -714,17 +725,18 @@ impl Shared {
             device: dev_name.clone(),
             device_id: dev_id.to_string(),
             error: None,
+            thumb: None,
         };
         self.set_transfer(info.clone());
 
         let p = path.clone();
-        let hashed = tokio::task::spawn_blocking(move || -> std::io::Result<(String, std::fs::Metadata)> {
+        let hashed = tokio::task::spawn_blocking(move || -> std::io::Result<(String, std::fs::Metadata, Option<String>)> {
             let h = hash_file(&p)?;
-            Ok((h, std::fs::metadata(&p)?))
+            Ok((h, std::fs::metadata(&p)?, crate::thumb::make(&p)))
         })
         .await
         .map_err(|_| Error::Invalid("hashing task failed".into()))?;
-        let (sha256, after) = match hashed {
+        let (sha256, after, thumb) = match hashed {
             Ok(v) => v,
             Err(e) => {
                 info.state = TransferState::Failed;
@@ -745,7 +757,7 @@ impl Shared {
         info.done = info.size;
         self.set_transfer(info);
         self.forget_transfer(&id); // transient: downloads get their own entries
-        let fref = FileRef { id, name, size: meta.len(), sha256, dir: Direction::ToPhone, local_path };
+        let fref = FileRef { id, name, size: meta.len(), sha256, dir: Direction::ToPhone, local_path, thumb };
         self.add_file_note(dev_id, "pc", fref.clone());
         Ok(fref)
     }
@@ -784,6 +796,7 @@ impl Shared {
             device: dev.name.clone(),
             device_id: dev.id.clone(),
             error: None,
+            thumb: None,
         };
         self.set_transfer(info.clone());
         let stream = SendStream {

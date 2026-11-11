@@ -46,6 +46,13 @@ class Store(private val context: Application) {
     /** File id -> where it was saved (a content:// address in Downloads/Bridge). */
     fun saved(): Map<String, String> = prefs.getString("saved", null)?.let { runCatching { json.decodeFromString(strings, it) }.getOrNull() } ?: emptyMap()
 
+    /** Ids of files the user said no to: they cannot be fetched from the chat afterwards. */
+    fun declined(): Set<String> = prefs.getStringSet("declined", null)?.toSet() ?: emptySet()
+
+    fun saveDeclined(ids: Set<String>) {
+        prefs.edit().putStringSet("declined", ids).apply()
+    }
+
     fun saveSaved(map: Map<String, String>) {
         prefs.edit().putString("saved", json.encodeToString(strings, map)).apply()
     }
@@ -103,6 +110,17 @@ class Store(private val context: Application) {
 
     fun setPhoneCleared(fp: String, id: Long) {
         prefs.edit().apply { if (id <= 0) remove("pcleared_$fp") else putLong("pcleared_$fp", id) }.apply()
+    }
+
+    fun notifySettings() = NotifySettings(
+        on = prefs.getBoolean("notify_on", true),
+        popup = prefs.getBoolean("notify_popup", true),
+        sound = prefs.getBoolean("notify_sound", true),
+        blink = prefs.getBoolean("notify_blink", true),
+    )
+
+    fun saveNotifySettings(s: NotifySettings) {
+        prefs.edit().putBoolean("notify_on", s.on).putBoolean("notify_popup", s.popup).putBoolean("notify_sound", s.sound).putBoolean("notify_blink", s.blink).apply()
     }
 
     var askedNotifications: Boolean

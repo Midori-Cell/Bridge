@@ -45,6 +45,12 @@ pub struct Settings {
     pub custom_accent: [u8; 3],
     /// The highlight color of the whole program.
     pub accent: crate::theme::Accent,
+    /// A new message or file while the window is not in front: a popup from the system.
+    pub notify_popup: bool,
+    /// ... a sound.
+    pub notify_sound: bool,
+    /// ... the icon in the taskbar / Dock / tray asks for attention.
+    pub notify_blink: bool,
 }
 
 /// The key (combination) that sends a message. The other combinations insert a new line.
@@ -93,7 +99,7 @@ impl Default for Settings {
     fn default() -> Self {
         // A tray icon is dependable on Windows and macOS. On Linux it depends on the desktop
         // (GNOME shows none without an extension), so closing quits there until the user opts in.
-        Self { keep_in_tray: !cfg!(target_os = "linux"), copy_incoming_text: false, zoom: 1.0, chat_zoom: 1.0, bubble_own: None, bubble_theirs: None, time_24h: true, send_key: SendKey::default(), chat_height: None, inbox_dir: None, hotkey_enabled: true, hotkey: Default::default(), inbox_confirmed: false, custom_accent: [0x2E, 0xA0, 0x6B], accent: crate::theme::Accent::default() }
+        Self { keep_in_tray: !cfg!(target_os = "linux"), copy_incoming_text: false, zoom: 1.0, chat_zoom: 1.0, bubble_own: None, bubble_theirs: None, time_24h: true, send_key: SendKey::default(), chat_height: None, inbox_dir: None, hotkey_enabled: true, hotkey: Default::default(), inbox_confirmed: false, custom_accent: [0x2E, 0xA0, 0x6B], accent: crate::theme::Accent::default(), notify_popup: true, notify_sound: true, notify_blink: true }
     }
 }
 
@@ -119,6 +125,8 @@ pub struct Hub {
     pub quitting: AtomicBool,
     /// The phone whose chat is open in the window, if any (the tray and the hotkey send the clipboard to it).
     pub open_phone: Mutex<Option<String>>,
+    /// The paired PC whose chat is open, so it is looked at once when the user opens it.
+    open_pc: Mutex<Option<String>>,
     /// This window system can hide a window. False on a native Wayland session, where the program
     /// cannot take its window away, so closing has to quit instead.
     pub window_can_hide: AtomicBool,
@@ -127,6 +135,11 @@ pub struct Hub {
     /// The close button hid the window (to the tray). A close request that arrives now cannot come
     /// from a click, but from the system (logging out, shutting down), and must not be refused.
     pub hidden: AtomicBool,
+    /// The window is in front and has the keyboard (kept up to date by the window loop).
+    pub focused: AtomicBool,
+    /// A message came in while the window was not in front: the icon asks for attention until the window is looked at.
+    pub attention: AtomicBool,
+    last_alert: Mutex<Option<Instant>>,
     /// Result of the last "start pairing with another PC" request, picked up by the window.
     pair_result: Mutex<Option<Result<OutgoingPair, String>>>,
     folder_pick: Mutex<Option<PathBuf>>,
@@ -154,13 +167,30 @@ impl Hub {
             hotkey_note: Mutex::new(String::new()),
             quitting: AtomicBool::new(false),
             open_phone: Mutex::new(None),
+            open_pc: Mutex::new(None),
             window_can_hide: AtomicBool::new(true),
             x11_forced: AtomicBool::new(false),
             hidden: AtomicBool::new(false),
+            focused: AtomicBool::new(false),
+            attention: AtomicBool::new(false),
+            last_alert: Mutex::new(None),
             pair_result: Mutex::new(None),
             folder_pick: Mutex::new(None),
             hotkey_id: std::sync::atomic::AtomicU32::new(0),
         })
+    }
+
+    /// The chat of a paired PC was opened (or another one, or none): check that PC now instead of waiting for the next round.
+    pub fn open_pc(&self, id: Option<&str>) {
+        let mut cur = lock(&self.open_pc);
+        if cur.as_deref() == id {
+            return;
+        }
+        *cur = id.map(str::to_string);
+        if let Some(id) = id {
+            let _g = self.rt.enter();
+            self.bridge.check_peer(id);
+        }
     }
 
     pub fn set_ctx(&self, ctx: egui::Context) {
@@ -187,6 +217,35 @@ impl Hub {
                 tracing::warn!("could not save settings: {e}");
             }
         }
+    }
+
+    // ------------------------------------------------------------ notifications
+
+    /// A message or file arrived (or someone asks something): sound, popup and blinking icon, as far as Settings allow
+    /// and only while the window is not in front. Several in a row make one notification.
+    pub fn notify_message(&self, title: String, body: String) {
+        if self.focused.load(Ordering::SeqCst) && !self.hidden.load(Ordering::SeqCst) {
+            return;
+        }
+        let s = self.settings();
+        if !(s.notify_popup || s.notify_sound || s.notify_blink) {
+            return;
+        }
+        {
+            let mut last = lock(&self.last_alert);
+            if last.is_some_and(|t| t.elapsed() < Duration::from_millis(1500)) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        if s.notify_blink {
+            self.attention.store(true, Ordering::SeqCst);
+            if let Some(c) = self.ctx.get() {
+                c.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            }
+            self.repaint();
+        }
+        crate::notify::alert(title, body, s.notify_popup, s.notify_sound);
     }
 
     // ------------------------------------------------------------ toasts
@@ -522,20 +581,34 @@ impl Hub {
                             (NoteKind::File, _, Some(f)) => me.toast(format!("{} received from {}", f.name, n.src), false),
                             _ => {}
                         }
+                        match (n.kind, n.text.as_deref(), n.file.as_ref()) {
+                            (NoteKind::File, _, Some(f)) => me.notify_message(format!("File from {}", n.src), f.name.clone()),
+                            (_, text, _) => me.notify_message(format!("Message from {}", n.src), crate::notify::preview(text.unwrap_or(""), 100)),
+                        }
                     }
-                    Ok(Event::PeerNote { note, .. }) if note.src != "pc" => match (note.kind, note.file.as_ref()) {
-                        (NoteKind::File, Some(f)) => me.toast(format!("{} received from {}", f.name, note.src), false),
-                        _ => me.toast(format!("Message from {}", note.src), false),
-                    },
+                    Ok(Event::PeerNote { note, .. }) if note.src != "pc" => {
+                        match (note.kind, note.file.as_ref()) {
+                            (NoteKind::File, Some(f)) => {
+                                me.toast(format!("{} received from {}", f.name, note.src), false);
+                                me.notify_message(format!("File from {}", note.src), f.name.clone());
+                            }
+                            _ => {
+                                me.toast(format!("Message from {}", note.src), false);
+                                me.notify_message(format!("Message from {}", note.src), crate::notify::preview(note.text.as_deref().unwrap_or(""), 100));
+                            }
+                        }
+                    }
                     Ok(Event::Transfer(t)) if t.state == TransferState::Offered && matches!(t.dir, Direction::ToPc | Direction::FromPeer) => {
                         // Someone wants to send a file: the answer needs a person.
                         me.show_window();
                         me.toast(format!("{} wants to send {}", t.device, t.name), false);
+                        me.notify_message(format!("{} wants to send a file", t.device), t.name.clone());
                     }
                     Ok(Event::PairRequest(r)) => {
                         // Someone asks to pair: bring the window up, the decision needs a person.
                         me.show_window();
                         me.toast(format!("{} wants to pair", r.name), false);
+                        me.notify_message(format!("{} wants to pair", r.name), "Open Bridge to compare the code.".to_string());
                     }
                     Ok(_) => {}
                     Err(RecvError::Lagged(_)) => {}

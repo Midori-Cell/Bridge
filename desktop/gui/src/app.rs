@@ -250,6 +250,20 @@ impl App {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // In front or not: messages only make a sound and a popup while the window is not being looked at.
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
+        self.hub.focused.store(focused, Ordering::SeqCst);
+        if focused {
+            self.hub.attention.store(false, Ordering::SeqCst);
+        }
+        // The tray icon blinks (a red dot, on and off) while a message waits.
+        if self.hub.attention.load(Ordering::SeqCst) {
+            let phase = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0) / 600) % 2 == 0;
+            self.keep.alert(phase);
+            ctx.request_repaint_after(Duration::from_millis(600));
+        } else {
+            self.keep.alert(false);
+        }
         // Runs even while the window is minimized: notice when it has been restored from the Dock.
         if self.min_watch.waiting() {
             let (minimized, focused) = ctx.input(|i| (i.viewport().minimized, i.viewport().focused));
@@ -294,6 +308,7 @@ impl eframe::App for App {
         let data = self.snapshot();
         self.resolve_selection(&data);
         *self.hub.open_phone.lock().unwrap_or_else(|e| e.into_inner()) = if let Sel::Phone(id) = &self.sel { Some(id.clone()) } else { None };
+        self.hub.open_pc(if let Sel::Pc(id) = &self.sel { Some(id.as_str()) } else { None });
         self.handle_drops(&ctx);
         self.handle_pasted_images(&ctx);
         self.handle_mac_window_keys(&ctx);

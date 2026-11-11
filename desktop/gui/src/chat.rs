@@ -271,7 +271,11 @@ fn bubble_drag(ui: &Ui, resp: &egui::Response, own: bool, avail: f32, z: f32) ->
 fn message(ui: &mut Ui, p: &Palette, own: bool, max_w: f32, fixed: bool, avail: f32, n: &Note, now: f64, z: f32, h24: bool) -> (Option<MsgAction>, Option<f32>) {
     let (fill, fg, fg2) = if own { (p.tint, p.on_tint, p.on_tint) } else { (p.bubble, p.label, p.label2) };
     if let (NoteKind::File, Some(f)) = (&n.kind, &n.file) {
-        let (click, resp) = file_bubble(ui, p, corners_for(own, z), fill, fg, fg2, own, max_w, fixed, z, f, n.ts, h24);
+        let picture = picture_bubble(ui, p, corners_for(own, z), own, max_w, z, f, n.ts, h24);
+        let (click, resp) = match picture {
+            Some(r) => r,
+            None => file_bubble(ui, p, corners_for(own, z), fill, fg, fg2, own, max_w, fixed, z, f, n.ts, h24),
+        };
         let action = click.map(|a| match a {
             FileClick::Open => MsgAction::Open(f.clone()),
             FileClick::Folder => MsgAction::ShowFolder(f.clone()),
@@ -486,12 +490,6 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
     let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
     let openable = f.local_path.is_some();
     let resp = if openable && !resp.dragged() { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
-    // The two small buttons sit on top of the bubble. Their places are known up front so that the tooltip
-    // of the bubble ("Open") is only shown where the pointer is not on one of them.
-    let folder_r = Rect::from_center_size(pos2(rect.max.x - 24.0 * z, rect.min.y + 27.0 * z), vec2(28.0 * z, 28.0 * z));
-    // The red x sits on the rounded top right corner of the bubble, half inside and half outside.
-    let delete_r = Rect::from_center_size(pos2(rect.max.x - 5.3 * z, rect.min.y + 5.3 * z), vec2(20.0 * z, 20.0 * z));
-    let on_buttons = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| delete_r.contains(pos) || (openable && folder_r.contains(pos)));
     let painter = ui.painter().clone();
     painter.rect_filled(rect, corners, fill);
     let icon = Rect::from_min_size(rect.min + vec2(14.0 * z, 9.0 * z), vec2(36.0 * z, 36.0 * z));
@@ -503,7 +501,21 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
     if let Some(t) = time {
         painter.galley(pos2(rect.max.x - 11.0 * z - t.size().x, rect.max.y - 4.0 * z - t.size().y), t, fg2);
     }
+    let hover_fill = if own { Color32::from_white_alpha(56) } else { p.field };
+    let (action, _) = file_buttons(ui, &painter, p, rect, &resp, z, f, openable, fg, hover_fill);
+    (action, resp)
+}
 
+/// The folder button and the red x that appear while the pointer is on a file or picture, and the click that
+/// opens it. Returns what was clicked, and whether the pointer is on one of the two buttons.
+#[allow(clippy::too_many_arguments)]
+fn file_buttons(ui: &mut Ui, painter: &egui::Painter, p: &Palette, rect: Rect, resp: &egui::Response, z: f32, f: &FileRef, openable: bool, icon_color: Color32, hover_fill: Color32) -> (Option<FileClick>, bool) {
+    // The two small buttons sit on top of the bubble. Their places are known up front so that the tooltip
+    // of the bubble ("Open") is only shown where the pointer is not on one of them.
+    let folder_r = Rect::from_center_size(pos2(rect.max.x - 24.0 * z, rect.min.y + 27.0 * z), vec2(28.0 * z, 28.0 * z));
+    // The red x sits on the rounded top right corner of the bubble, half inside and half outside.
+    let delete_r = Rect::from_center_size(pos2(rect.max.x - 5.3 * z, rect.min.y + 5.3 * z), vec2(20.0 * z, 20.0 * z));
+    let on_buttons = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| delete_r.contains(pos) || (openable && folder_r.contains(pos)));
     let mut action = if resp.clicked() && openable && !on_buttons { Some(FileClick::Open) } else { None };
     if ui.rect_contains_pointer(rect) || ui.rect_contains_pointer(delete_r) {
         let id = f.id.as_str();
@@ -511,9 +523,9 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
             let r = folder_r;
             let b = ui.interact(r, theme::id(("file_folder", id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Show in folder");
             if b.hovered() {
-                painter.circle_filled(r.center(), 14.0 * z, if own { Color32::from_white_alpha(56) } else { p.field });
+                painter.circle_filled(r.center(), 14.0 * z, hover_fill);
             }
-            icons::draw(&painter, Icon::Folder, r.center(), 17.0 * z, fg);
+            icons::draw(painter, Icon::Folder, r.center(), 17.0 * z, icon_color);
             if b.clicked() {
                 action = Some(FileClick::Folder);
             }
@@ -527,7 +539,7 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
         let b = ui.interact(r, theme::id(("file_delete", id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
         painter.circle_filled(r.center(), 9.0 * z, if b.hovered() { Color32::from_rgb(0xB0, 0x00, 0x14) } else { p.red.linear_multiply(1.0) });
         painter.circle_stroke(r.center(), 9.0 * z, Stroke::new(1.5, p.chat));
-        icons::draw(&painter, Icon::Close, r.center(), 10.0 * z, Color32::WHITE);
+        icons::draw(painter, Icon::Close, r.center(), 10.0 * z, Color32::WHITE);
         if b.clicked() {
             action = Some(FileClick::Delete);
         }
@@ -535,7 +547,56 @@ fn file_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, fill: Color32, f
     if openable && !on_buttons {
         resp.clone().on_hover_text("Open");
     }
-    (action, resp)
+    (action, on_buttons)
+}
+
+/// A picture file, shown as the picture itself (a little blurred while only the preview is there, for example
+/// when the file was removed from the inbox). `None` when the file is not a picture or there is nothing to show.
+#[allow(clippy::too_many_arguments)]
+fn picture_bubble(ui: &mut Ui, p: &Palette, corners: CornerRadius, own: bool, max_w: f32, z: f32, f: &FileRef, ts: f64, h24: bool) -> Option<(Option<FileClick>, egui::Response)> {
+    if !bridge_core::thumb::is_picture_name(&f.name) {
+        return None;
+    }
+    let path = f.local_path.as_deref().map(std::path::Path::new).filter(|p| p.is_file());
+    if path.is_none() && f.thumb.is_none() {
+        return None;
+    }
+    if path.is_some() && f.thumb.is_none() && crate::pictures::failed(ui.ctx(), &f.id) {
+        return None; // cannot be shown as a picture: it is an ordinary file bubble then
+    }
+    let known = crate::pictures::known_aspect(ui.ctx(), &f.id).unwrap_or(vec2(4.0, 3.0));
+    let edge = (260.0 * z).min(max_w);
+    let fit = |a: Vec2| {
+        let s = edge / a.x.max(a.y).max(1.0);
+        vec2((a.x * s).max(70.0 * z), (a.y * s).max(48.0 * z))
+    };
+    // only pictures that are on screen are decoded
+    let visible = ui.is_rect_visible(Rect::from_min_size(ui.cursor().min, fit(known)));
+    let pic = crate::pictures::show(ui.ctx(), &f.id, path, f.thumb.as_deref(), visible);
+    let size = fit(pic.as_ref().map_or(known, |x| x.aspect));
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let openable = path.is_some();
+    let resp = if openable && !resp.dragged() { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
+    let painter = ui.painter().clone();
+    match &pic {
+        Some(pic) => {
+            egui::Image::new(egui::load::SizedTexture::new(pic.id, size)).corner_radius(corners).paint_at(ui, rect);
+            if pic.blurred {
+                painter.rect_filled(rect, corners, Color32::from_white_alpha(30));
+            }
+        }
+        None => {
+            painter.rect_filled(rect, corners, if own { p.tint } else { p.bubble });
+            icons::draw(&painter, Icon::File, rect.center(), 22.0 * z, if own { p.on_tint } else { p.label2 });
+        }
+    }
+    if let Some(t) = time_galley(&painter, ts, h24, false, z, Color32::WHITE) {
+        let pill = Rect::from_min_size(pos2(rect.max.x - 8.0 * z - t.size().x - 12.0 * z, rect.max.y - 6.0 * z - t.size().y - 6.0 * z), t.size() + vec2(12.0 * z, 6.0 * z));
+        painter.rect_filled(pill, CornerRadius::same((9.0 * z).round() as u8), Color32::from_black_alpha(120));
+        painter.galley(pill.min + vec2(6.0 * z, 3.0 * z), t, Color32::WHITE);
+    }
+    let (action, _) = file_buttons(ui, &painter, p, rect, &resp, z, f, openable, Color32::WHITE, Color32::from_black_alpha(130));
+    Some((action, resp))
 }
 
 fn composer(ui: &mut Ui, area: Rect, chat: Chat, p: Palette) -> (Compose, bool) {

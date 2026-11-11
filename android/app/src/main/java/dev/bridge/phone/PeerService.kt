@@ -34,6 +34,7 @@ class PeerService : Service() {
             .build()
         ServiceCompat.startForeground(this, ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         Phones.startForService()
+        Bridge.backgroundChanged()
         return START_STICKY
     }
 

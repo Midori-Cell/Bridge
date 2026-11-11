@@ -140,6 +140,7 @@ class History(private val dir: File, private val limit: Int = 5000) {
                     put("size", f.size)
                     put("sha256", f.sha256)
                     put("dir", f.dir)
+                    if (f.thumb != null) put("thumb", f.thumb)
                 })
             }
             n.reply?.let { r ->
@@ -161,7 +162,7 @@ class History(private val dir: File, private val limit: Int = 5000) {
                 src = s("src"),
                 kind = s("kind").ifEmpty { "text" },
                 text = (o["text"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.contentOrNull,
-                file = (o["file"] as? JsonObject)?.let { f -> FileRef(s("id", f), s("name", f), l("size", f), s("sha256", f), s("dir", f)) },
+                file = (o["file"] as? JsonObject)?.let { f -> FileRef(s("id", f), s("name", f), l("size", f), s("sha256", f), s("dir", f), (f["thumb"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.contentOrNull) },
                 reply = (o["reply"] as? JsonObject)?.let { r -> Reply(s("mid", r), s("src", r), s("preview", r)) },
             )
         }

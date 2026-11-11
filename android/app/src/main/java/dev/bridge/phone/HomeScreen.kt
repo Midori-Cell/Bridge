@@ -93,6 +93,7 @@ fun HomeScreen(onPair: () -> Unit) {
     val notes = convo?.notes ?: emptyList()
     val transfers = convo?.transfers ?: emptyList()
     val saved by Bridge.saved.collectAsState()
+    val declined by Bridge.declined.collectAsState()
     val time24 by Bridge.time24.collectAsState()
     var text by rememberSaveable { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<Note?>(null) }
@@ -180,7 +181,7 @@ fun HomeScreen(onPair: () -> Unit) {
                             if (firstOfDay) DayLine(dayLabel(dayOf(note.ts)))
                             Bubble(
                                 note = note,
-                                state = fileState(note, transfers, saved),
+                                state = fileState(note, transfers, saved, declined),
                                 time = if (note.pending) "Waiting to send" else if (note.ts > 0) timeText(note.ts, time24) else "",
                                 onTap = { current.tap(context, note, saved) },
                                 onCopy = { copyText(context, note.text.orEmpty()) },
@@ -253,11 +254,18 @@ fun HomeScreen(onPair: () -> Unit) {
 
         SectionLabel("FILES")
         Panel {
-            val recent = notes.filter { it.isFile }.takeLast(3).asReversed()
-            if (recent.isEmpty()) Txt("Files you exchange with ${current.name} show up here.", Modifier.padding(16.dp), color = p.label2, size = 14.sp)
+            // files that are still on their way (or waiting, or failed) first, then the last few that arrived or were sent
+            val pending = transfers.filter { it.pcId == current.id && it.state != TState.Done }.asReversed()
+            val recent = notes.filter { it.isFile && !it.isOffer }.takeLast(3).asReversed()
+            if (pending.isEmpty() && recent.isEmpty()) Txt("Files you exchange with ${current.name} show up here.", Modifier.padding(16.dp), color = p.label2, size = 14.sp)
+            pending.forEachIndexed { i, t ->
+                if (i > 0) Sep()
+                TransferRow(t)
+            }
+            if (pending.isNotEmpty() && recent.isNotEmpty()) Sep()
             recent.forEachIndexed { i, note ->
                 if (i > 0) Sep()
-                RecentRow(note, current.name, fileState(note, transfers, saved), onTap = { current.tap(context, note, saved) }, onCopy = { copyText(context, note.text.orEmpty()) })
+                RecentRow(note, current.name, fileState(note, transfers, saved, declined), onTap = { current.tap(context, note, saved) }, onCopy = { copyText(context, note.text.orEmpty()) })
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -294,7 +302,9 @@ private fun Bubble(note: Note, state: FileState, time: String, onTap: () -> Unit
                     Txt("↩ ${quote.preview}", Modifier.padding(bottom = 3.dp), color = quiet, size = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 val file = note.file
-                if (file != null) {
+                if (file != null && file.thumb != null) {
+                    PictureContent(file, state, quiet)
+                } else if (file != null) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Box(
                             Modifier.size(30.dp).clip(RoundedCornerShape(8.dp)).background(if (mine) Color.White.copy(alpha = 0.22f) else p.field),
@@ -325,7 +335,10 @@ private fun Bubble(note: Note, state: FileState, time: String, onTap: () -> Unit
                         MenuRow("Copy", R.drawable.ic_copy, p.label) { menu = false; onCopy() }
                         if (!note.pending) MenuRow("Reply", R.drawable.ic_reply, p.label) { menu = false; onReply() }
                     }
-                    MenuRow(if (note.pending) "Cancel sending" else "Delete", R.drawable.ic_trash, p.red) { menu = false; onDelete() }
+                    // a picture that is offered can be declined; once it is on its way there is nothing to decline
+                    if (!note.isOffer || state.action != null) {
+                        MenuRow(if (note.isOffer) "Decline" else if (note.pending) "Cancel sending" else "Delete", R.drawable.ic_trash, p.red) { menu = false; onDelete() }
+                    }
                 }
             }
         }
@@ -355,7 +368,7 @@ private fun MenuRow(label: String, icon: Int, color: Color, onClick: () -> Unit)
 @Composable
 private fun RecentRow(note: Note, deviceName: String, state: FileState, onTap: () -> Unit, onCopy: () -> Unit) {
     val p = LocalPalette.current
-    val who = if (note.fromPc) deviceName else "You"
+    val who = directionLabel(note.fromPc, deviceName)
     val file = note.file
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if (file != null) {

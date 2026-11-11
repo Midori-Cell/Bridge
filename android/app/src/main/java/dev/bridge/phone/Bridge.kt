@@ -83,6 +83,10 @@ object Bridge {
     private val _saved = MutableStateFlow<Map<String, String>>(emptyMap())
     val saved: StateFlow<Map<String, String>> = _saved.asStateFlow()
 
+    /** Files the user declined. They stay in the chat, but cannot be downloaded. */
+    private val _declined = MutableStateFlow<Set<String>>(emptySet())
+    val declined: StateFlow<Set<String>> = _declined.asStateFlow()
+
     /** Short messages for the user (a toast): "unpaired", "no longer on the PC", ... */
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages
@@ -100,7 +104,7 @@ object Bridge {
     private val _time24 = MutableStateFlow(true)
     val time24: StateFlow<Boolean> = _time24.asStateFlow()
 
-    /** A file the PC offers that nobody has answered yet. */
+    /** A file the PC offers that nobody has answered yet. (Pictures are not asked about: they show in the chat, blurred, and are fetched when tapped.) */
     data class Offer(val file: FileRef, val pc: Pc)
 
     private val _offers = MutableStateFlow<List<Offer>>(emptyList())
@@ -121,8 +125,10 @@ object Bridge {
         store = Store(application)
         history = History(java.io.File(application.filesDir, "history"))
         _saved.value = store.saved()
+        _declined.value = store.declined()
         _themeMode.value = store.themeMode
         _time24.value = store.time24
+        Notifier.init(application, store)
         Phones.init(application, store)
         reload()
         _cleared.value = _pcs.value.associate { it.id to store.clearedUpTo(it.id) }
@@ -208,7 +214,18 @@ object Bridge {
     /** The user answered the question "receive this file?". */
     fun answer(offer: Offer, accept: Boolean) {
         _offers.update { l -> l.filter { it.file.id != offer.file.id } }
-        if (accept) download(offer.file, offer.pc)
+        if (accept) {
+            if (offer.file.id in _declined.value) { // answered yes this time (the PC offered it again)
+                val ids = _declined.value - offer.file.id
+                store.saveDeclined(ids)
+                _declined.value = ids
+            }
+            download(offer.file, offer.pc)
+        } else {
+            val ids = _declined.value + offer.file.id
+            store.saveDeclined(ids)
+            _declined.value = ids
+        }
     }
 
     fun select(pc: Pc) {
@@ -262,14 +279,24 @@ object Bridge {
     fun setVisible(value: Boolean) {
         visible = value
         Phones.setScreen(value)
-        if (value) restartPoll() else pollJob?.cancel()
+        if (value) restartPoll() else if (!store.receiveInBackground) pollJob?.cancel()
+    }
+
+    /** "Receive while app is closed" was turned on or off (or the service started): the PC's news is followed in the background, or not. */
+    fun backgroundChanged() {
+        if (visible) return
+        if (store.receiveInBackground) {
+            if (pollJob?.isActive != true) restartPoll()
+        } else {
+            pollJob?.cancel()
+        }
     }
 
     private fun restartPoll() {
         pollJob?.cancel()
         pollJob = null
         val pc = _active.value ?: return
-        if (!visible) return
+        if (!visible && !store.receiveInBackground) return
         pollJob = scope.launch { poll(pc) }
     }
 
@@ -305,13 +332,18 @@ object Bridge {
                 // another phone paired with the same PC writes into the same history; only this phone's part is shown
                 val mine = myName
                 val news = r.notes.filter { mine == null || it.src == "pc" || it.src == mine }
+                // while the app is closed (it keeps following the PC only with "Receive while app is closed") a new message is announced
+                val prior = lastId
+                if (!visible && prior != null) {
+                    news.lastOrNull { it.src == "pc" && it.id > prior }?.let { Notifier.message(pc.name, it.text ?: ("File: " + (it.file?.name ?: ""))) }
+                }
                 val gone = r.deleted.toSet()
                 history.merge(pc.id, news, gone, r.lastId, r.del)
                 refresh(pc.id)
 
                 // files the PC sent since the last visit are offered now (the phone user decides); the older history is left alone
                 val seen = store.seen(pc.id) ?: r.lastId
-                val wanted = news.mapNotNull { n -> n.file?.takeIf { n.id > seen && n.kind == "file" && it.dir == "to_phone" && it.id !in _saved.value } }
+                val wanted = news.mapNotNull { n -> n.file?.takeIf { n.id > seen && n.kind == "file" && it.dir == "to_phone" && it.id !in _saved.value && it.thumb == null } }
                 store.setSeen(pc.id, maxOf(seen, r.lastId))
                 if (wanted.isNotEmpty()) _offers.update { old -> (old + wanted.map { Offer(it, pc) }).distinctBy { o -> o.file.id } }
 
@@ -567,7 +599,10 @@ object Bridge {
         var fileId: String? = null
         try {
             val name = _transfers.value.firstOrNull { it.key == key }?.name ?: "file"
-            val created = api.createFile(name, size)
+            // a picture goes with a small preview; a larger copy stays on this phone so the chat can show it sharp
+            val thumb = withContext(Dispatchers.IO) { Thumbs.make(app, uri) }
+            val created = api.createFile(name, size, thumb)
+            if (thumb != null) withContext(Dispatchers.IO) { Thumbs.keep(app, created.id, uri) }
             fileId = created.id
             var state = created.state
             // the PC's user decides first; nothing is sent until the PC says yes
@@ -668,8 +703,9 @@ object Bridge {
         MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase()) ?: "application/octet-stream"
 
     /** Save a file the PC offers into Downloads/Bridge. */
-    fun download(file: FileRef, pc: Pc) {
+    fun download(file: FileRef, pc: Pc, ignoreDeclined: Boolean = false) {
         if (_transfers.value.any { it.key == file.id && it.running }) return
+        if (file.id in _declined.value && !ignoreDeclined) return // declined files are not fetched
         _transfers.update { l -> l.filter { it.key != file.id } + Transfer(file.id, pc.id, file.name, file.size, upload = false) }
         try {
             ContextCompat.startForegroundService(app, Intent(app, TransferService::class.java))

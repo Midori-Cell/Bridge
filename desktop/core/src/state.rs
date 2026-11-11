@@ -649,7 +649,7 @@ mod migration_tests {
         p.devices.insert("first".into(), device("Pixel", 1.0));
         p.devices.insert("second".into(), device("Galaxy", 2.0));
         p.notes = vec![note(1, "Pixel", "p1"), note(2, "pc", "to everybody"), note(3, "Galaxy", "g1"), note(4, "Gone phone", "orphan")];
-        let file = FileRef { id: "f1".into(), name: "a.txt".into(), size: 1, sha256: String::new(), dir: crate::model::Direction::ToPhone, local_path: None };
+        let file = FileRef { id: "f1".into(), name: "a.txt".into(), size: 1, sha256: String::new(), dir: crate::model::Direction::ToPhone, local_path: None, thumb: None };
         let mut n5 = note(5, "pc", "");
         n5.kind = NoteKind::File;
         n5.file = Some(file);

@@ -31,6 +31,29 @@ pub fn rgba(size: u32) -> Vec<u8> {
     out
 }
 
+/// The icon with a red dot in the upper right corner: something new is waiting.
+pub fn rgba_alert(size: u32) -> Vec<u8> {
+    let mut px = rgba(size);
+    let s = size as f32;
+    let (cx, cy, r) = (0.76 * s, 0.24 * s, 0.22 * s);
+    for y in 0..size {
+        for x in 0..size {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            // white ring around a red dot, edges softened over one pixel
+            let colour = if d <= r * 0.74 { Some([235u8, 64, 52]) } else if d <= r { Some([255u8, 255, 255]) } else { None };
+            if let Some(c) = colour {
+                let edge = (r + 0.5 - d).clamp(0.0, 1.0);
+                let i = ((y * size + x) * 4) as usize;
+                for k in 0..3 {
+                    px[i + k] = (px[i + k] as f32 * (1.0 - edge) + c[k] as f32 * edge).round() as u8;
+                }
+                px[i + 3] = px[i + 3].max((edge * 255.0) as u8);
+            }
+        }
+    }
+    px
+}
+
 fn in_rounded_square(x: f32, y: f32) -> bool {
     let (m, r) = (0.04, 0.22);
     let (cx, cy) = (x.clamp(m + r, 1.0 - m - r), y.clamp(m + r, 1.0 - m - r));

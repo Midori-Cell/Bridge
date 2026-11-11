@@ -36,6 +36,12 @@ interface FileSource {
     val name: String
     val size: Long
     fun open(offset: Long): InputStream
+
+    /** For a picture: the small preview (JPEG, base64) that goes with the offer. Called on a background thread. */
+    fun thumb(): String? = null
+
+    /** Called with the id of the transfer after [thumb] gave a preview: a place to keep a larger copy for the chat. */
+    fun keepPreview(id: String) {}
 }
 
 class FileOnDisk(private val file: File) : FileSource {
@@ -78,6 +84,8 @@ data class Xfer(
     val incoming: Boolean,
     val state: XState,
     val error: String? = null,
+    /** For a picture: the preview that came with the offer (or went with it). */
+    val thumb: String? = null,
 ) {
     val running: Boolean get() = state == XState.Offered || state == XState.Queued || state == XState.Active
 }
@@ -102,6 +110,8 @@ class PeerEngine(
     private val bind: InetAddress? = null,
     private val wantedPort: Int = 0,
     private val maxFileSize: Long = 20L * 1024 * 1024 * 1024,
+    /** A text from a paired device arrived: its fingerprint, its name and the text. */
+    private val onText: (fp: String, from: String, text: String) -> Unit = { _, _, _ -> },
 ) {
     companion object {
         const val PROTOCOL = 1
@@ -574,7 +584,9 @@ class PeerEngine(
         val name = safeName(source.name)
         val size = source.size
         val peerName = peerName(fp) ?: ""
-        fun x(state: XState, done: Long = 0, error: String? = null) = setX(Xfer(tid, fp, peerName, name, size, done, false, state, error))
+        val thumb = try { source.thumb()?.takeIf { Thumb.valid(it) } } catch (e: Exception) { null }
+        if (thumb != null) try { source.keepPreview(tid) } catch (e: Exception) { }
+        fun x(state: XState, done: Long = 0, error: String? = null) = setX(Xfer(tid, fp, peerName, name, size, done, false, state, error, thumb))
         try {
             val sha = try {
                 val d = MessageDigest.getInstance("SHA-256")
@@ -595,7 +607,7 @@ class PeerEngine(
                 return
             }
             val create = try {
-                request(fp, "POST", "/peer/files", buildJsonObject { put("id", tid); put("name", name); put("size", size); put("sha256", sha) }.toString().toByteArray(), abort = handle.abort)
+                request(fp, "POST", "/peer/files", buildJsonObject { put("id", tid); put("name", name); put("size", size); put("sha256", sha); if (thumb != null) put("thumb", thumb) }.toString().toByteArray(), abort = handle.abort)
             } catch (e: Offline) {
                 if (ref == null) {
                     x(XState.Failed, error = "The other device is not reachable.")
@@ -698,7 +710,7 @@ class PeerEngine(
                 }
             }
             x(XState.Done, size)
-            addNote(fp, Note(0, tid, now(), name(), "file", null, FileRef(tid, name, size, sha, "to_pc")))
+            addNote(fp, Note(0, tid, now(), name(), "file", null, FileRef(tid, name, size, sha, "to_pc", thumb)))
         } catch (e: CancelledByUs) {
             runCatching { request(fp, "DELETE", "/peer/files/$tid", readMs = 4000) }
             x(XState.Cancelled, error = "Cancelled")
@@ -748,7 +760,7 @@ class PeerEngine(
 
     private class In(
         val id: String, val fp: String, val peerName: String, val name: String, val size: Long, val sha: String?,
-        val created: Long = System.currentTimeMillis(),
+        val created: Long = System.currentTimeMillis(), val thumb: String? = null,
     ) {
         var received = 0L
         var state = InState.Pending
@@ -767,7 +779,7 @@ class PeerEngine(
     }
 
     private fun incomingX(i: In, state: XState, error: String? = null) =
-        setX(Xfer(i.id, i.fp, i.peerName, i.name, i.size, if (state == XState.Done) i.size else i.received, true, state, error))
+        setX(Xfer(i.id, i.fp, i.peerName, i.name, i.size, if (state == XState.Done) i.size else i.received, true, state, error, i.thumb))
 
     /** The user says yes. */
     fun acceptFile(id: String): Boolean {
@@ -822,7 +834,7 @@ class PeerEngine(
         }
         synchronized(lock) { i.state = InState.Done }
         incomingX(i, XState.Done)
-        val note = addNote(i.fp, Note(0, i.id, now(), "pc", "file", null, FileRef(i.id, i.name, i.size, i.sha ?: "", "to_phone")))
+        val note = addNote(i.fp, Note(0, i.id, now(), "pc", "file", null, FileRef(i.id, i.name, i.size, i.sha ?: "", "to_phone", i.thumb)))
         try { onFileReceived(i.fp, note, File(inbox, "${i.id}.file")) } catch (e: Exception) { }
     }
 
@@ -1243,7 +1255,10 @@ class PeerEngine(
             val mine = (r["mine"] as? JsonPrimitive)?.booleanOrNull ?: false
             Reply(rm, if (mine) "pc" else name(), str(r, "preview").take(160))
         }
-        if (history.notes(fp).none { it.mid == mid }) addNote(fp, Note(0, mid, now(), "pc", "text", text, null, reply))
+        if (history.notes(fp).none { it.mid == mid }) {
+            addNote(fp, Note(0, mid, now(), "pc", "text", text, null, reply))
+            try { onText(fp, peerName(fp) ?: "", text) } catch (e: Exception) { }
+        }
         return Answer(200, buildJsonObject { put("ok", true); put("name", name()) })
     }
 
@@ -1261,6 +1276,8 @@ class PeerEngine(
             else -> throw Fail(400, "bad_id")
         }
         if (size > maxFileSize) throw Fail(413, "file_too_large")
+        // a preview that is not a small JPEG is dropped, the offer itself still works
+        val thumb = (b["thumb"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { Thumb.valid(it) }
         val i: In
         synchronized(lock) {
             val t = System.currentTimeMillis()
@@ -1268,7 +1285,7 @@ class PeerEngine(
             if (incomingFiles.containsKey(id)) throw Fail(409, "id_in_use")
             val open = incomingFiles.values.count { it.fp == fp && (it.state == InState.Pending || it.state == InState.Receiving) }
             if (open >= MAX_OPEN_PER_PEER) throw Fail(429, "too_many_transfers")
-            i = In(id, fp, peers[fp]?.name ?: "", safeName(nm), size, sha)
+            i = In(id, fp, peers[fp]?.name ?: "", safeName(nm), size, sha, thumb = thumb)
             incomingFiles[id] = i
         }
         incomingX(i, XState.Offered)

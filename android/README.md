@@ -33,6 +33,11 @@ has its own certificate, and from then on only that exact phone is trusted.
 - **Long-press a message** for *Copy*, *Reply* and *Delete* (Delete removes it on the PC too). Long-press a file for *Open* or
   *Save*, and *Delete*.
 - **Links** in messages open in your browser when you tap them.
+- **Pictures** are shown in the chat itself. A picture that was offered shows as a blurred preview with *Tap to download*;
+  nothing is downloaded until you tap it, then it is saved in Downloads/Bridge and shown sharp (tap it again to open it in
+  your gallery). *Decline* (long-press) refuses it. A file you declined cannot be fetched from the chat afterwards.
+- Under **FILES** below the chat, files that are waiting or on their way are listed first, then the last few; each line says
+  *From* or *To* which device.
 - The row of **device chips** under the title switches between your PCs and phones; every device has its own chat and files.
 - **Clear chat** (right end of the status line) deletes the chat on this phone only. The phone keeps its own history, so
   *Clear chat* on the PC never removes it here, and the other way round.
@@ -41,7 +46,9 @@ has its own certificate, and from then on only that exact phone is trusted.
 
 **Settings** has the phone's name, **Visible to other phones** (lets nearby phones find this one while pairing),
 **Receive while app is closed** (keeps a small notification so Bridge can receive in the background), this phone's address,
-the paired devices with *Remove*, and
+the paired devices with *Remove*,
+**Notifications** (a message or file arriving while Bridge is not open: pop-up, sound, vibration and light, each with its own
+switch; messages from a PC are only noticed while Bridge is open or *Receive while app is closed* is on), and
 **Appearance**: *System* (follows Android, the default), *Off* (always light) or *On* (always dark).
 
 ### Sending files from other apps

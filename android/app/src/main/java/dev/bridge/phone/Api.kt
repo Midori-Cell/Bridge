@@ -156,10 +156,11 @@ class Api(private val pc: Pc, private val http: OkHttpClient) {
 
     // ---- phone -> PC
 
-    suspend fun createFile(name: String, size: Long): CreateResponse {
+    suspend fun createFile(name: String, size: Long, thumb: String? = null): CreateResponse {
         val body = buildJsonObject {
             put("name", name)
             put("size", size)
+            if (thumb != null) put("thumb", thumb)
         }
         return call(request("/api/files").post(jsonBody(body.toString())).build(), CreateResponse.serializer())
     }

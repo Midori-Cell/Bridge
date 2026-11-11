@@ -227,17 +227,39 @@ fun toast(context: Context, text: String) {
     Toast.makeText(context, text, Toast.LENGTH_LONG).show()
 }
 
-/** How a file note looks and what tapping it does. `action` is null while nothing can be done. */
-data class FileState(val action: String?, val status: String)
+/** The name of a paired PC or phone by its id, for "From ..." and "To ..." lines. */
+fun deviceName(id: String): String? = Bridge.pcs.value.firstOrNull { it.id == id }?.name ?: Phones.peers.value.firstOrNull { it.fp == id }?.name
 
-fun fileState(note: Note, transfers: List<Transfer>, saved: Map<String, String>): FileState {
+/** "From NAME" for what came in, "To NAME" for what went out. */
+fun directionLabel(incoming: Boolean, name: String?): String = (if (incoming) "From " else "To ") + (name ?: "this device")
+
+/** How a file note looks and what tapping it does. `action` is null while nothing can be done. */
+data class FileState(
+    val action: String?,
+    val status: String,
+    /** On its way (waiting or downloading); `progress` is the percent. */
+    val running: Boolean = false,
+    val progress: Int = 0,
+    val declined: Boolean = false,
+    val failed: Boolean = false,
+    /** The file is on this phone (Downloads/Bridge). */
+    val saved: Boolean = false,
+)
+
+fun fileState(note: Note, transfers: List<Transfer>, saved: Map<String, String>, declined: Set<String> = emptySet()): FileState {
     val file = note.file ?: return FileState(null, "")
     if (file.dir != "to_phone") return FileState(null, "${sizeText(file.size)} · sent")
     val t = transfers.firstOrNull { it.key == file.id }
     return when {
-        t != null && t.running -> FileState(null, if (t.state == TState.Waiting || t.state == TState.Queued) "Waiting..." else "${percent(t)}%")
-        file.id in saved -> FileState("Open", "${sizeText(file.size)} · saved in Downloads/Bridge")
-        t != null && t.state == TState.Failed -> FileState("Retry", "Failed: ${t.error ?: "unknown error"}")
+        // a picture another phone offers: nothing was asked yet, tapping it downloads it
+        note.isOffer && t != null && t.state == TState.Waiting -> FileState("Download", "${sizeText(file.size)} · tap to download")
+        t != null && t.running -> {
+            val waiting = t.state == TState.Waiting || t.state == TState.Queued
+            FileState(null, if (waiting) "Waiting..." else "${percent(t)}%", running = true, progress = if (waiting) 0 else percent(t))
+        }
+        file.id in saved -> FileState("Open", "${sizeText(file.size)} · saved in Downloads/Bridge", saved = true)
+        file.id in declined -> FileState(null, "${sizeText(file.size)} · declined", declined = true)
+        t != null && t.state == TState.Failed -> FileState("Retry", "Failed: ${t.error ?: "unknown error"}", failed = true)
         else -> FileState("Save", "${sizeText(file.size)} · not saved yet")
     }
 }
@@ -247,8 +269,18 @@ fun percent(t: Transfer): Int = if (t.size > 0) (t.done * 100 / t.size).toInt().
 /** Open a saved file, or fetch it from the PC. */
 fun fileTap(context: Context, note: Note, pc: Pc?, saved: Map<String, String>) {
     val file = note.file ?: return
+    if (note.isOffer) {
+        Phones.answerPicture(file.id, true)
+        return
+    }
     if (file.dir != "to_phone") return
-    if (file.id in saved) Bridge.open(context, file) else if (pc != null) Bridge.download(file, pc)
+    if (file.id in saved) {
+        Bridge.open(context, file)
+    } else if (file.id in Bridge.declined.value) {
+        toast(context, "You declined this file, so it is not downloaded.")
+    } else if (pc != null) {
+        Bridge.download(file, pc)
+    }
 }
 
 // ---------------------------------------------------------------------- web addresses in messages

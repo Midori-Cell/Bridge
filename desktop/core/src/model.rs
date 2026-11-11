@@ -93,6 +93,9 @@ pub struct FileRef {
     /// Never sent to a phone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
+    /// For a picture: a tiny JPEG (base64) that is shown blurred until the picture itself was fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<String>,
 }
 
 /// What a message answers: a short quote, taken from this PC's own copy of the original.
@@ -392,6 +395,8 @@ pub struct TransferInfo {
     pub device_id: String,
     /// Reason for `Failed`; who stopped it for `Declined` and `Cancelled`.
     pub error: Option<String>,
+    /// For a picture: the tiny preview (base64 JPEG) that came with the offer.
+    pub thumb: Option<String>,
 }
 
 #[derive(Clone, Debug)]

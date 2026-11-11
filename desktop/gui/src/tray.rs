@@ -28,6 +28,8 @@ pub struct Keep {
     registered: Option<HotKey>,
     /// Set to stop the thread that watches the keyboard (shortcuts with two ordinary keys, or only modifiers).
     watcher: Option<Arc<AtomicBool>>,
+    /// The icon shows the red dot right now.
+    alert_shown: bool,
     #[cfg(not(target_os = "linux"))]
     _tray: Option<TrayIcon>,
     #[cfg(target_os = "linux")]
@@ -66,6 +68,27 @@ impl Keep {
                 note(format!("{text} sends the clipboard to the phone"));
                 watch_keyboard(hub.clone(), groups, text, stop);
             }
+        }
+    }
+
+    /// Show the tray icon with a red dot (`on`) or as usual. The window loop calls this about twice a second while a
+    /// message waits, which makes the icon blink on Windows and macOS; on Linux the panel is told that the icon
+    /// needs attention and shows that in its own way.
+    pub fn alert(&mut self, on: bool) {
+        if self.alert_shown == on {
+            return;
+        }
+        self.alert_shown = on;
+        #[cfg(not(target_os = "linux"))]
+        if let Some(t) = &self._tray {
+            let px = if on { icon::rgba_alert(64) } else { icon::rgba(64) };
+            if let Ok(i) = tray_icon::Icon::from_rgba(px, 64, 64) {
+                let _ = t.set_icon(Some(i));
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(h) = &self._tray {
+            h.update(|t| t.attention = on);
         }
     }
 
@@ -189,6 +212,8 @@ fn build_tray() -> Result<TrayIcon, String> {
 #[cfg(target_os = "linux")]
 pub struct LinuxTray {
     hub: Arc<Hub>,
+    /// A message waits: the panel is asked to draw attention to the icon.
+    attention: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -206,6 +231,18 @@ impl ksni::Tray for LinuxTray {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip { title: "Bridge".into(), ..Default::default() }
+    }
+
+    fn status(&self) -> ksni::Status {
+        if self.attention { ksni::Status::NeedsAttention } else { ksni::Status::Active }
+    }
+
+    fn attention_icon_pixmap(&self) -> Vec<ksni::Icon> {
+        let mut data = icon::rgba_alert(64);
+        for px in data.chunks_exact_mut(4) {
+            px.rotate_right(1);
+        }
+        vec![ksni::Icon { width: 64, height: 64, data }]
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -258,7 +295,7 @@ impl ksni::Tray for LinuxTray {
 #[cfg(target_os = "linux")]
 fn linux_tray(hub: Arc<Hub>) -> Result<ksni::blocking::Handle<LinuxTray>, String> {
     use ksni::blocking::TrayMethods;
-    LinuxTray { hub }.spawn().map_err(|e| e.to_string())
+    LinuxTray { hub, attention: false }.spawn().map_err(|e| e.to_string())
 }
 
 fn create_hotkey_manager(hub: &Arc<Hub>) -> Option<GlobalHotKeyManager> {

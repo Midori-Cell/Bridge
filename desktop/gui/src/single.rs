@@ -41,6 +41,7 @@ pub fn claim(port: u16) -> Option<TcpListener> {
     match TcpListener::bind(addr(port)) {
         Ok(l) => Some(l),
         Err(_) => {
+            allow_foreground();
             if notify_running(port) {
                 std::process::exit(0);
             }
@@ -48,6 +49,23 @@ pub fn claim(port: u16) -> Option<TcpListener> {
         }
     }
 }
+
+/// Windows only lets the program in front hand the foreground on. This copy was just started by the user (a click,
+/// or a file dropped on the icon), so it may pass that right on to the running copy, which then really comes to the front.
+#[cfg(windows)]
+fn allow_foreground() {
+    #[link(name = "user32")]
+    extern "system" {
+        fn AllowSetForegroundWindow(process_id: u32) -> i32;
+    }
+    // ASFW_ANY: any process may take the foreground
+    unsafe {
+        AllowSetForegroundWindow(u32::MAX);
+    }
+}
+
+#[cfg(not(windows))]
+fn allow_foreground() {}
 
 /// Answer requests from later starts by showing the window. Runs for the life of the program.
 pub fn serve(listener: TcpListener, hub: Arc<Hub>) {

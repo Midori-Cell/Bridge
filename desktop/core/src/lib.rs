@@ -17,6 +17,7 @@ mod peer;
 mod server;
 mod state;
 mod transfer;
+pub mod thumb;
 mod util;
 
 use std::net::UdpSocket;
@@ -278,6 +279,12 @@ impl Bridge {
     /// Paired PCs.
     pub fn peers(&self) -> Vec<Peer> {
         self.shared.peers()
+    }
+
+    /// Look now whether a paired PC is reachable (the window calls this when the user opens its chat). The result
+    /// shows in `peers()`, and `Event::PeersChanged` is sent if the status changed. Needs a running runtime.
+    pub fn check_peer(&self, id: &str) {
+        self.shared.probe_peer(id);
     }
 
     /// Start pairing with the PC at `host:port` (its PC port). Show `code` on screen; the other PC shows the same one.

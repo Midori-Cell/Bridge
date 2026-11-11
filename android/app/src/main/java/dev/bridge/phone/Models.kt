@@ -26,6 +26,8 @@ data class FileRef(
     val sha256: String = "",
     /** "to_phone" (the PC sent it) or "to_pc" (this phone sent it). */
     val dir: String = "",
+    /** For a picture: a tiny JPEG (base64) that is shown blurred until the picture itself was fetched. */
+    val thumb: String? = null,
 )
 
 /** One entry of the shared history: a text note or a file. `src` is "pc" or the name of the phone that wrote it. */
@@ -44,7 +46,13 @@ data class Note(
 ) {
     val fromPc: Boolean get() = src == "pc"
     val isFile: Boolean get() = kind == "file" && file != null
+
+    /** Not a message of the history but a picture another phone offers: shown in the chat until it is fetched. */
+    val isOffer: Boolean get() = id >= OFFER_BASE
 }
+
+/** Offered pictures get ids from here up, above any id of the history. */
+const val OFFER_BASE = Long.MAX_VALUE / 2
 
 /** A text written while the PC was not reachable. It is saved and sent as soon as the PC is online. */
 @Serializable

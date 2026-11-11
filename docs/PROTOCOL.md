@@ -14,9 +14,11 @@ Every phone has its own conversation with the PC. All of these calls are scoped 
 until the PC user accepts; poll until it is `receiving`, `declined` or `cancelled`), `PUT|GET|DELETE /api/files/{id}`,
 `GET /api/files/{id}/content` (HTTP Range), `POST /api/files/{id}/ticket`. The Android app uses this API.
 
+**Picture previews.** A file offer (`POST /peer/files`, `POST /api/files`) may carry `thumb`: a JPEG of at most 160 pixels on a side, base64 encoded, at most 16 000 characters (the programs make about 48 pixels, around 1 to 2 KB). It is also part of a file in the history (`file.thumb`). The receiver shows it enlarged, so blurred, until the user accepts the picture. A `thumb` that is not a small, well-formed JPEG is dropped; the offer itself is still accepted.
+
 PC to PC (mutual TLS, port 8444): `GET /peer/hello`, `POST /peer/pair`, `POST /peer/pair/{id}/reveal`, `GET /peer/pair/{id}` (long-poll),
 `POST /peer/pair/{id}/complete` (sent by the starting PC after its user confirmed; only then does the answering PC save it), `POST /peer/pair/{id}/cancel`, then for paired PCs `GET /peer/ping`, `POST /peer/messages` (with `mid` and an optional `reply` object `{mid, mine, preview}` that carries the quote, so the other PC does not need the same copy of the original; repeating the same `mid` is harmless), `POST /peer/notes/delete` (`mid`),
-`POST /peer/files` (sender-chosen `id`, `name`, `size`, `sha256`; answer `state` is `pending` until accepted),
+`POST /peer/files` (sender-chosen `id`, `name`, `size`, `sha256`, and for a picture an optional `thumb`; answer `state` is `pending` until accepted),
 `GET|PUT|DELETE /peer/files/{id}` (status, resumable upload, checksum verified; `DELETE` = cancel), `POST /peer/transfers/{id}/dismiss`
 (remove a cancelled or declined card on the other PC), `POST /peer/unpair`.
 

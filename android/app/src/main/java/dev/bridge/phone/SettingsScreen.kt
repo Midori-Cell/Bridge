@@ -55,6 +55,7 @@ fun SettingsScreen(onPair: () -> Unit) {
     val address by Phones.address.collectAsState()
     val mode by Bridge.themeMode.collectAsState()
     val time24 by Bridge.time24.collectAsState()
+    val notify by Notifier.settings.collectAsState()
     val context = LocalContext.current
     val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
 
@@ -90,6 +91,18 @@ fun SettingsScreen(onPair: () -> Unit) {
             }
         }
         Footnote("This is the name other phones show for this phone. A PC shows the name this phone had when it was paired; rename it in Bridge on the PC.")
+
+        SectionLabel("NOTIFICATIONS")
+        Panel {
+            SwitchRow("New messages and files", "Tell me when Bridge is not open", notify.on) { v -> Notifier.change { it.copy(on = v) } }
+            Sep()
+            SwitchRow("Pop-up", "A small banner on the screen", notify.popup && notify.on, enabled = notify.on) { v -> Notifier.change { it.copy(popup = v) } }
+            Sep()
+            SwitchRow("Sound", "Play the notification sound", notify.sound && notify.on, enabled = notify.on) { v -> Notifier.change { it.copy(sound = v) } }
+            Sep()
+            SwitchRow("Vibration and light", "Make the phone vibrate and its light blink", notify.blink && notify.on, enabled = notify.on) { v -> Notifier.change { it.copy(blink = v) } }
+        }
+        Footnote("Messages from a PC reach the phone only while Bridge is open, or when \"Receive while app is closed\" is on. Android keeps the notification settings of each combination in its own channel (see Android's notification settings for Bridge).")
 
         SectionLabel("APPEARANCE")
         Panel {
@@ -246,13 +259,13 @@ fun SettingsScreen(onPair: () -> Unit) {
 }
 
 @Composable
-private fun SwitchRow(title: String, text: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun SwitchRow(title: String, text: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     val p = LocalPalette.current
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.weight(1f)) {
             Txt(title)
             Txt(text, color = p.label2, size = 13.sp)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }

@@ -1492,3 +1492,58 @@ async fn a_hidden_file_is_still_offered_and_a_deleted_one_is_not() {
     assert!(h.b().delete_note(&a.id, &f.id));
     assert_eq!(fetch(&h, &a, &f.id, None).await.0, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------- picture previews
+
+fn picture(path: &std::path::Path, w: u32, h: u32) {
+    image::RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 90])).save(path).unwrap();
+}
+
+#[tokio::test]
+async fn a_picture_offer_from_the_phone_carries_a_checked_preview() {
+    let h = H::new().await;
+    h.b().set_auto_accept_files(false);
+    let ph = h.pair().await;
+    let img = h.tmp.path().join("holiday.png");
+    picture(&img, 300, 200);
+    let thumb = bridge_core::thumb::make(&img).expect("preview");
+    let data = std::fs::read(&img).unwrap();
+
+    let (st, c) = h.post_json("/api/files", Some(&ph), json!({ "name": "holiday.png", "size": data.len(), "thumb": thumb })).await;
+    assert_eq!((st, c["state"].as_str()), (StatusCode::OK, Some("pending")), "{c}");
+    let id = c["id"].as_str().unwrap().to_string();
+    // the user's window gets the preview with the offer, before anything was downloaded
+    let offer = h.b().transfers().into_iter().find(|t| t.id == id).unwrap();
+    assert_eq!(offer.thumb.as_deref(), Some(thumb.as_str()));
+
+    // something that is not a small JPEG is dropped, and the offer still works
+    let (st, c2) = h.post_json("/api/files", Some(&ph), json!({ "name": "x.png", "size": 3, "thumb": "AAAA" })).await;
+    assert_eq!(st, StatusCode::OK, "{c2}");
+    let offer2 = h.b().transfers().into_iter().find(|t| t.id == c2["id"].as_str().unwrap()).unwrap();
+    assert_eq!(offer2.thumb, None);
+
+    // after accepting, the picture and its preview are in the history
+    assert!(h.b().accept_file(&id).await);
+    let (st, v) = h.put(&ph, &id, 0, data.clone()).await;
+    assert_eq!((st, v["done"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
+    let notes = h.b().notes(&ph.id, 50);
+    let f = notes.iter().filter_map(|n| n.file.as_ref()).find(|f| f.id == id).expect("file note");
+    assert_eq!(f.thumb.as_deref(), Some(thumb.as_str()));
+}
+
+#[tokio::test]
+async fn a_picture_offered_to_the_phone_shows_a_preview_in_its_feed() {
+    let h = H::new().await;
+    let ph = h.pair().await;
+    let img = h.tmp.path().join("cat.jpg");
+    picture(&img, 120, 120);
+    let f = h.b().send_file(&ph.id, &img).await.unwrap();
+    assert!(f.thumb.is_some());
+    let notes = h.notes(&ph).await;
+    let file = notes.iter().find(|n| n["kind"] == "file").unwrap();
+    assert!(file["file"]["thumb"].as_str().is_some_and(|t| bridge_core::thumb::valid(t)), "{file}");
+    // other files get none
+    let txt = h.tmp.path().join("a.txt");
+    std::fs::write(&txt, "hi").unwrap();
+    assert!(h.b().send_file(&ph.id, &txt).await.unwrap().thumb.is_none());
+}
