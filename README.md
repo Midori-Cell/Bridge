@@ -172,8 +172,8 @@ cd desktop
 cargo run --release -p bridge-gui
 ```
 
-Linux needs `libgtk-3-dev libayatana-appindicator3-dev libxdo-dev` (Debian/Ubuntu) or
-`gtk3 libayatana-appindicator xdotool` (Arch). Windows needs the Visual Studio Build Tools (C++ workload).
+Linux needs `libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libasound2-dev` (Debian/Ubuntu) or
+`gtk3 libayatana-appindicator xdotool alsa-lib` (Arch). Windows needs the Visual Studio Build Tools (C++ workload).
 Tests: `cargo test --workspace`.
 
 **Android app:** open the `android` folder in Android Studio and press Run.

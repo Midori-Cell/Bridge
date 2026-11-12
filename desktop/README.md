@@ -78,7 +78,8 @@ or a click beside the picture closes it. The buttons at the top open it in the s
 
 **Notifications:** while the window is not in front, a new message or file (and a request to send a file or to pair) can show a
 popup from the system, play a sound and make the icon ask for attention (the taskbar button flashes, the Dock icon jumps, the tray
-icon gets a red dot and blinks). Each of the three has a switch in *Settings > Notifications*.
+icon gets a red dot and blinks). Each of the three has a switch in *Settings > Notifications*. The sound is Bridge's own (not the
+system's): choose *Chime*, *Pop*, *Bell*, *Marimba* or *Ping* and the volume there; choosing one plays it, and *Play* plays it again.
 
 **Unpair** (right-click a device, or use the button in its conversation) removes the pairing and the conversation here.
 A PC you unpair is told and removes its side too; a phone notices the next time it connects.
@@ -131,8 +132,8 @@ looking for other PCs.
   tray* is on (it needs a restart after switching it on). Without XWayland, closing the window quits Bridge. On any desktop,
   Bridge ends cleanly when you log out or shut down.
 - The global hotkey needs X11 (or XWayland). On a pure Wayland session Settings shows "Hotkey unavailable"; everything else works.
-- **Notifications** use `notify-send` (package `libnotify`) and the sound theme (`canberra-gtk-play` or `paplay`). Without them a message still
-  makes the window ask for attention; the popup and the sound are skipped.
+- **Notifications:** the popup uses `notify-send` (package `libnotify`); without it the popup is skipped. The sound plays through ALSA
+  (`libasound2` / `alsa-lib`), which PipeWire and PulseAudio also serve.
 - The file picker uses the desktop portal (`xdg-desktop-portal`), which current desktops include.
 
 ## If something does not work

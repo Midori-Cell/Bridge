@@ -529,6 +529,39 @@ if widgets::plain(ui, "Clear list").on_hover_text("Delete the file list on this 
                     widgets::trailing(ui, |ui| widgets::switch(ui, &mut s.notify_sound));
                 });
             });
+            if s.notify_sound {
+                g.row(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Sound");
+                        widgets::trailing(ui, |ui| {
+                            if widgets::secondary(ui, "Play").clicked() {
+                                crate::sound::play(s.notify_sound_kind, s.notify_volume);
+                            }
+                            let before_kind = s.notify_sound_kind;
+                            egui::ComboBox::from_id_salt("notify_sound_kind").selected_text(s.notify_sound_kind.label()).show_ui(ui, |ui| {
+                                for k in crate::sound::SoundKind::ALL {
+                                    ui.selectable_value(&mut s.notify_sound_kind, k, k.label());
+                                }
+                            });
+                            // choosing a sound plays it, so the list can be tried out
+                            if s.notify_sound_kind != before_kind {
+                                crate::sound::play(s.notify_sound_kind, s.notify_volume);
+                            }
+                        });
+                    });
+                });
+                g.row(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Volume");
+                        widgets::trailing(ui, |ui| {
+                            let r = ui.add(egui::Slider::new(&mut s.notify_volume, 5..=100).suffix(" %"));
+                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                crate::sound::play(s.notify_sound_kind, s.notify_volume);
+                            }
+                        });
+                    });
+                });
+            }
             g.row(|ui| {
                 ui.horizontal(|ui| {
                     ui.label("Make the icon blink");
@@ -536,7 +569,7 @@ if widgets::plain(ui, "Clear list").on_hover_text("Delete the file list on this 
                 });
             });
         });
-        widgets::footnote(ui, "Only while the Bridge window is not in front. The icon blinks in the taskbar or Dock and, with a tray icon, in the tray, until you open Bridge. The popup and the sound come from the system (on Linux notify-send and the sound theme).");
+        widgets::footnote(ui, "Only while the Bridge window is not in front. The icon blinks in the taskbar or Dock and, with a tray icon, in the tray, until you open Bridge. The sound is Bridge's own and plays on the default audio output; the popup comes from the system (on Linux notify-send).");
         if s != before {
             let hotkey_changed = s.hotkey != before.hotkey || s.hotkey_enabled != before.hotkey_enabled;
             self.hub.change_settings(|x| *x = s);

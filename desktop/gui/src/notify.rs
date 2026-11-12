@@ -1,8 +1,7 @@
-//! Message notifications: a sound and a small popup from the system. (The icon in the taskbar, Dock or tray that
-//! asks for attention is handled by `hub.rs` and `tray.rs`.) No extra libraries: each system has a command for it.
-//!
-//! Linux: `notify-send` and the sound theme (`canberra-gtk-play`, or `paplay`). macOS: `osascript` and `afplay`.
-//! Windows: a small PowerShell script that shows a toast. Where a command is missing nothing happens.
+//! The popup of a message notification, shown by the system. (The sound is Bridge's own, in `sound.rs`; the icon
+//! that asks for attention is handled by `hub.rs` and `tray.rs`.) Each system has a command for the popup:
+//! Linux `notify-send`, macOS `osascript`, Windows a small PowerShell script that shows a toast. Where the command
+//! is missing nothing happens.
 
 use std::process::{Command, Stdio};
 
@@ -16,12 +15,10 @@ pub fn preview(text: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// Show a popup and/or play the sound. Runs on its own thread, so the caller never waits.
-pub fn alert(title: String, body: String, popup: bool, sound: bool) {
-    if !popup && !sound {
-        return;
-    }
-    std::thread::spawn(move || run(&title, &body, popup, sound));
+/// Show a popup from the system. Runs on its own thread, so the caller never waits. (The sound is Bridge's own,
+/// see `sound.rs`; the popup is always silent.)
+pub fn popup(title: String, body: String) {
+    std::thread::spawn(move || run(&title, &body));
 }
 
 fn quiet(cmd: &mut Command) -> Option<bool> {
@@ -29,58 +26,35 @@ fn quiet(cmd: &mut Command) -> Option<bool> {
 }
 
 #[cfg(target_os = "linux")]
-fn run(title: &str, body: &str, popup: bool, sound: bool) {
-    if popup {
-        let _ = quiet(Command::new("notify-send").args(["--app-name=Bridge", "--icon=bridge", "--expire-time=6000", "--", title, body]));
-    }
-    if sound {
-        let tried = [
-            ("canberra-gtk-play", vec!["--id=message-new-instant", "--description=Bridge"]),
-            ("paplay", vec!["/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"]),
-            ("pw-play", vec!["/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"]),
-        ];
-        for (cmd, args) in tried {
-            if quiet(Command::new(cmd).args(args)) == Some(true) {
-                break;
-            }
-        }
-    }
+fn run(title: &str, body: &str) {
+    // the hint asks the notification server not to play its own sound
+    let _ = quiet(Command::new("notify-send").args(["--app-name=Bridge", "--icon=bridge", "--expire-time=6000", "--hint=boolean:suppress-sound:true", "--", title, body]));
 }
 
 #[cfg(target_os = "macos")]
-fn run(title: &str, body: &str, popup: bool, sound: bool) {
+fn run(title: &str, body: &str) {
     // AppleScript string: backslash and quote are escaped, so a message cannot end the string
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
-    if popup {
-        let tail = if sound { " sound name \"Glass\"" } else { "" };
-        let script = format!("display notification \"{}\" with title \"{}\"{}", esc(body), esc(title), tail);
-        let _ = quiet(Command::new("osascript").args(["-e", &script]));
-    } else if sound {
-        let _ = quiet(Command::new("afplay").arg("/System/Library/Sounds/Glass.aiff"));
-    }
+    let script = format!("display notification \"{}\" with title \"{}\"", esc(body), esc(title));
+    let _ = quiet(Command::new("osascript").args(["-e", &script]));
 }
 
 #[cfg(windows)]
-fn run(title: &str, body: &str, popup: bool, sound: bool) {
+fn run(title: &str, body: &str) {
     use std::os::windows::process::CommandExt;
     let xml_escape = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;");
-    // The text travels in environment variables, so it is never part of the script.
+    // The text travels in an environment variable, so it is never part of the script. The toast is silent.
     let toast = format!(
-        "<toast><visual><binding template='ToastGeneric'><text>{}</text><text>{}</text></binding></visual>{}</toast>",
+        "<toast><visual><binding template='ToastGeneric'><text>{}</text><text>{}</text></binding></visual><audio silent='true'/></toast>",
         xml_escape(title),
         xml_escape(body),
-        if sound { "" } else { "<audio silent='true'/>" }
     );
-    let script = if popup {
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
+    let script = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
          [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null; \
          $x = New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml($env:BRIDGE_TOAST); \
          $t = [Windows.UI.Notifications.ToastNotification]::new($x); \
          [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($t); \
-         Start-Sleep -Milliseconds 1500"
-    } else {
-        "[System.Media.SystemSounds]::Asterisk.Play(); Start-Sleep -Milliseconds 1200"
-    };
+         Start-Sleep -Milliseconds 1500";
     let _ = quiet(
         Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
@@ -90,7 +64,7 @@ fn run(title: &str, body: &str, popup: bool, sound: bool) {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn run(_title: &str, _body: &str, _popup: bool, _sound: bool) {}
+fn run(_title: &str, _body: &str) {}
 
 #[cfg(test)]
 mod tests {

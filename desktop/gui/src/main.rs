@@ -14,6 +14,7 @@ mod icon;
 mod icons;
 mod minimize;
 mod notify;
+mod sound;
 mod viewer;
 mod pages;
 mod pictures;
@@ -114,11 +115,14 @@ fn main() {
         .with_app_id("bridge")
         .with_inner_size([1040.0, 760.0])
         .with_min_inner_size([720.0, 520.0]);
-    // On a Mac the icon comes from the app bundle (rounded, all sizes). Setting one here would replace it in the
-    // Dock and in the app switcher with a small square picture.
-    if !cfg!(target_os = "macos") {
-        viewport = viewport.with_icon(egui::IconData { rgba: icon::rgba(256), width: 256, height: 256 });
-    }
+    // On a Mac the icon comes from the app bundle (rounded, all sizes). Any icon set here would replace it in the
+    // Dock and the app switcher while Bridge runs, and with no icon at all eframe puts in its own (egui) logo.
+    // An empty icon is eframe's way to say "leave the app's icon alone".
+    viewport = if cfg!(target_os = "macos") {
+        viewport.with_icon(egui::IconData::default())
+    } else {
+        viewport.with_icon(egui::IconData { rgba: icon::rgba(256), width: 256, height: 256 })
+    };
     let options = eframe::NativeOptions {
         viewport,
         event_loop_builder: session.event_loop_hook(),

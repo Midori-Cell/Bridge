@@ -6,13 +6,13 @@
 _owner=YOUR-GITHUB-NAME
 _repo=bridge
 pkgname=bridge-app
-pkgver=0.4.2
+pkgver=0.4.3
 pkgrel=1
 pkgdesc='Send text and files between your PC, your phone and other PCs on your home network'
 arch=('x86_64' 'aarch64')
 url="https://github.com/${_owner}/${_repo}"
 license=('MIT')
-depends=('gtk3' 'libayatana-appindicator' 'xdotool' 'gcc-libs' 'glibc')
+depends=('gtk3' 'libayatana-appindicator' 'xdotool' 'alsa-lib' 'gcc-libs' 'glibc')
 makedepends=('cargo')
 # Arch builds C code with -flto by default; the linker used for Rust cannot read that, so ring (the TLS crypto) fails to link.
 options=('!lto')
