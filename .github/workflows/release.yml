@@ -66,33 +66,46 @@ jobs:
           name: dist-linux
           path: dist/*
 
-  arch:
-    name: Arch Linux (.pkg.tar.zst)
-    needs: prepare
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
-    steps:
-      - name: Tools
-        run: pacman -Syu --noconfirm git rust gtk3 libayatana-appindicator xdotool
-      - uses: actions/checkout@v4
-      - name: Build with makepkg
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          repo=$(sed -n 's/^_repo=//p' packaging/arch/PKGBUILD)
-          mkdir -p /tmp/pkg dist
-          # the PKGBUILD expects the tarball of the tagged source; build it here instead of downloading it
-          git archive --prefix="${repo}-${VERSION}/" -o "/tmp/pkg/bridge-app-${VERSION}.tar.gz" HEAD
-          sed "s/^pkgver=.*/pkgver=${VERSION}/" packaging/arch/PKGBUILD > /tmp/pkg/PKGBUILD
-          useradd -m builder
-          chown -R builder /tmp/pkg
-          su builder -c 'cd /tmp/pkg && makepkg -f --noconfirm'
-          cp /tmp/pkg/*.pkg.tar.zst dist/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist-arch
-          path: dist/*.pkg.tar.zst
+arch:
+  name: Arch Linux (.pkg.tar.zst)
+  needs: prepare
+  runs-on: ubuntu-latest
+  container: archlinux:base-devel
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      env:
+        VERSION: ${{ needs.prepare.outputs.version }}
+      run: |
+        pacman -Syu --noconfirm --needed git rust
+        # stage a PKGBUILD with the correct pkgver
+        mkdir -p /tmp/pkg
+        sed "s/^pkgver=.*/pkgver=${VERSION}/" packaging/arch/PKGBUILD > /tmp/pkg/PKGBUILD
+        # source it to get depends/makedepends arrays (it's our own file, safe)
+        ( source /tmp/pkg/PKGBUILD
+          pacman -S --noconfirm --needed \
+            "${depends[@]}" "${makedepends[@]}" \
+            gtk3 libayatana-appindicator xdotool )   # keep extras that are only build-time
+
+    - name: Build with makepkg
+      env:
+        VERSION: ${{ needs.prepare.outputs.version }}
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        repo=$(sed -n 's/^_repo=//p' packaging/arch/PKGBUILD)
+        mkdir -p /tmp/pkg dist
+        git archive --prefix="${repo}-${VERSION}/" -o "/tmp/pkg/bridge-app-${VERSION}.tar.gz" HEAD
+        sed "s/^pkgver=.*/pkgver=${VERSION}/" packaging/arch/PKGBUILD > /tmp/pkg/PKGBUILD
+        useradd -m builder
+        chown -R builder /tmp/pkg
+        su builder -c 'cd /tmp/pkg && makepkg -f --noconfirm'
+        cp /tmp/pkg/*.pkg.tar.zst dist/
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dist-arch
+        path: dist/*.pkg.tar.zst
 
   windows:
     name: Windows (setup .exe, .zip)
