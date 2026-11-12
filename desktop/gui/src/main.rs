@@ -14,6 +14,7 @@ mod icon;
 mod icons;
 mod minimize;
 mod notify;
+mod viewer;
 mod pages;
 mod pictures;
 mod session;

@@ -14,6 +14,8 @@ use egui::{ColorImage, Context, TextureHandle, TextureId, TextureOptions, Vec2};
 const MAX_EDGE: u32 = 640;
 /// Textures kept at the same time; the ones not drawn for longest are dropped first.
 const KEEP: usize = 40;
+/// Longest side of a picture in the large view (more is shown scaled down; the zoom stops at this size).
+const LARGE_EDGE: u32 = 4096;
 
 /// What to draw for a picture.
 pub struct Pic {
@@ -23,6 +25,9 @@ pub struct Pic {
     /// The preview is shown, not the picture itself.
     pub blurred: bool,
 }
+
+/// Pictures the worker decoded (or could not decode), waiting to become textures.
+type Finished = Arc<Mutex<Vec<(String, Option<Rgba>)>>>;
 
 struct Entry {
     tex: Option<TextureHandle>,
@@ -34,11 +39,13 @@ struct Entry {
 struct Cache {
     full: HashMap<String, Entry>,
     previews: HashMap<String, Entry>,
+    /// The large view: the picture shown and at most one next to it (decoded ahead).
+    large: HashMap<String, Entry>,
     /// Pixel sizes seen so far, so a message keeps its size when its texture was dropped.
     sizes: HashMap<String, Vec2>,
     requested: std::collections::HashSet<String>,
-    finished: Arc<Mutex<Vec<(String, Option<Rgba>)>>>,
-    jobs: Option<Sender<(String, PathBuf)>>,
+    finished: Finished,
+    jobs: Option<Sender<(String, PathBuf, u32)>>,
 }
 
 #[derive(Clone, Default)]
@@ -53,14 +60,14 @@ fn color_image(img: &Rgba) -> ColorImage {
 }
 
 fn start_worker(cache: &mut Cache, ctx: &Context) {
-    let (tx, rx) = channel::<(String, PathBuf)>();
+    let (tx, rx) = channel::<(String, PathBuf, u32)>();
     let finished = cache.finished.clone();
     let ctx = ctx.clone();
     std::thread::Builder::new()
         .name("bridge-pictures".into())
         .spawn(move || {
-            while let Ok((key, path)) = rx.recv() {
-                let img = thumb::decode_file(&path, MAX_EDGE);
+            while let Ok((key, path, edge)) = rx.recv() {
+                let img = thumb::decode_file(&path, edge);
                 finished.lock().unwrap_or_else(|e| e.into_inner()).push((key, img));
                 ctx.request_repaint();
             }
@@ -72,23 +79,10 @@ fn start_worker(cache: &mut Cache, ctx: &Context) {
 /// The picture to show for one file. `path` is the file on this PC (if it is there), `preview` the small preview
 /// (if one came with it). `visible`: only pictures that are on screen are decoded.
 pub fn show(ctx: &Context, id: &str, path: Option<&Path>, preview: Option<&str>, visible: bool) -> Option<Pic> {
-    let shared: Shared = ctx.data_mut(|d| d.get_temp_mut_or_insert_with(crate::theme::id("bridge-pictures"), Shared::default).clone());
+    let shared = shared(ctx);
     let mut c = lock(&shared.0);
     let frame = ctx.cumulative_pass_nr();
-
-    // pictures the worker finished since the last frame become textures
-    let done: Vec<_> = std::mem::take(&mut *c.finished.lock().unwrap_or_else(|e| e.into_inner()));
-    for (key, img) in done {
-        c.requested.remove(&key);
-        let entry = match img {
-            Some(img) => {
-                c.sizes.insert(key.clone(), Vec2::new(img.width as f32, img.height as f32));
-                Entry { tex: Some(ctx.load_texture(&key, color_image(&img), TextureOptions::LINEAR)), failed: false, used: frame }
-            }
-            None => Entry { tex: None, failed: true, used: frame },
-        };
-        c.full.insert(key, entry);
-    }
+    collect(&mut c, ctx, frame);
 
     let mut result_full = None;
     if let Some(path) = path {
@@ -102,7 +96,7 @@ pub fn show(ctx: &Context, id: &str, path: Option<&Path>, preview: Option<&str>,
             }
             c.requested.insert(key.clone());
             if let Some(tx) = &c.jobs {
-                let _ = tx.send((key, path.to_path_buf()));
+                let _ = tx.send((key, path.to_path_buf(), MAX_EDGE));
             }
         }
     }
@@ -136,9 +130,75 @@ pub fn show(ctx: &Context, id: &str, path: Option<&Path>, preview: Option<&str>,
     None
 }
 
+fn shared(ctx: &Context) -> Shared {
+    ctx.data_mut(|d| d.get_temp_mut_or_insert_with(crate::theme::id("bridge-pictures"), Shared::default).clone())
+}
+
+/// Pictures the worker finished since the last frame become textures.
+fn collect(c: &mut Cache, ctx: &Context, frame: u64) {
+    let done: Vec<_> = std::mem::take(&mut *c.finished.lock().unwrap_or_else(|e| e.into_inner()));
+    for (key, img) in done {
+        c.requested.remove(&key);
+        let entry = match img {
+            Some(img) => {
+                c.sizes.insert(key.clone(), Vec2::new(img.width as f32, img.height as f32));
+                Entry { tex: Some(ctx.load_texture(&key, color_image(&img), TextureOptions::LINEAR)), failed: false, used: frame }
+            }
+            None => Entry { tex: None, failed: true, used: frame },
+        };
+        if key.starts_with("l:") {
+            c.large.insert(key, entry);
+        } else {
+            c.full.insert(key, entry);
+        }
+    }
+}
+
+/// The picture for the large view, in up to 4096 pixels: its texture and its size in pixels. `None` while it is
+/// decoded (the chat's smaller picture can be shown meanwhile) or when it cannot be read. `ahead`: pictures to
+/// decode next (the neighbours in the viewer), so going on is quick. Other large pictures are dropped.
+pub fn large(ctx: &Context, id: &str, path: &Path, ahead: &[(&str, &Path)]) -> Option<(TextureId, Vec2)> {
+    let shared = shared(ctx);
+    let mut c = lock(&shared.0);
+    let frame = ctx.cumulative_pass_nr();
+    collect(&mut c, ctx, frame);
+    let key = format!("l:{id}");
+    let wanted: Vec<String> = std::iter::once(key.clone()).chain(ahead.iter().map(|(i, _)| format!("l:{i}"))).collect();
+    c.large.retain(|k, _| wanted.contains(k));
+    for (k, p) in std::iter::once((key.clone(), path)).chain(ahead.iter().map(|(i, p)| (format!("l:{i}"), *p))) {
+        if !c.large.contains_key(&k) && !c.requested.contains(&k) {
+            if c.jobs.is_none() {
+                start_worker(&mut c, ctx);
+            }
+            c.requested.insert(k.clone());
+            if let Some(tx) = &c.jobs {
+                let _ = tx.send((k, p.to_path_buf(), LARGE_EDGE));
+            }
+        }
+    }
+    let size = c.sizes.get(&key).copied();
+    let e = c.large.get_mut(&key)?;
+    e.used = frame;
+    Some((e.tex.as_ref()?.id(), size?))
+}
+
+/// The large view was closed: its pictures are not needed any more.
+pub fn drop_large(ctx: &Context) {
+    let shared = shared(ctx);
+    let mut c = lock(&shared.0);
+    c.large.clear();
+}
+
+/// The large picture could not be decoded.
+pub fn large_failed(ctx: &Context, id: &str) -> bool {
+    let shared = shared(ctx);
+    let c = lock(&shared.0);
+    c.large.get(&format!("l:{id}")).is_some_and(|e| e.failed)
+}
+
 /// Size of the picture shown for `id` if it is known already (for laying out the message before it is drawn).
 pub fn known_aspect(ctx: &Context, id: &str) -> Option<Vec2> {
-    let shared: Shared = ctx.data_mut(|d| d.get_temp_mut_or_insert_with(crate::theme::id("bridge-pictures"), Shared::default).clone());
+    let shared = shared(ctx);
     let c = lock(&shared.0);
     c.sizes.get(&format!("f:{id}")).or_else(|| c.sizes.get(&format!("t:{id}"))).copied()
 }
@@ -157,7 +217,7 @@ fn evict(c: &mut Cache, frame: u64) {
 
 /// The picture file could not be decoded (damaged, or a kind of picture that is not supported).
 pub fn failed(ctx: &Context, id: &str) -> bool {
-    let shared: Shared = ctx.data_mut(|d| d.get_temp_mut_or_insert_with(crate::theme::id("bridge-pictures"), Shared::default).clone());
+    let shared = shared(ctx);
     let c = lock(&shared.0);
     c.full.get(&format!("f:{id}")).is_some_and(|e| e.failed)
 }

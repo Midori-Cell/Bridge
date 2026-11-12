@@ -1,6 +1,6 @@
 # Bridge
 
-Send files and text between PCs, Android phones and between PCs and Android phones over your home network.
+Send text and files between your PC, your Android phone and your other PCs, over your home network.
 Connections are encrypted, nothing goes through the internet, and no account is needed.
 
 - **PC app** (Windows, macOS, Linux): a window with a chat per device, drag-and-drop files, a tray icon,
@@ -10,25 +10,6 @@ Connections are encrypted, nothing goes through the internet, and no account is 
 
 **Bridge never connects to the internet.** It has no update check, no telemetry and no account. To update, download the
 new version from the [releases page](../../releases) and install it over the old one.
-<table>
-  <tr>
-    <p align="center">
-<img width="415" height="317" alt="grafik" src="https://github.com/user-attachments/assets/f490a150-0ac8-4d26-97b0-4662b2f668bc" /> <img width="415" height="317" alt="image" src="https://github.com/user-attachments/assets/004b5dcd-5432-4233-b06e-1417e9a698e6" />
-      </p>
-      </tr>
-</table>
-<table>
-  <tr>
-    <p align="center">
-<img width="415" height="317" alt="image" src="https://github.com/user-attachments/assets/1dbdc80c-2dd1-4119-ab79-c78109755a83" />
-<img width="415" height="317" alt="Pasted image 2026-11-06 06-52-00" src="https://github.com/user-attachments/assets/7447284b-94bd-4d0d-b3fb-5d22b36eac52" />
-      </p>
-      </tr>
-</table>
-<p align="center">
-<img width="210" height="440" alt="Screenshot_20261106-075855_Bridge" src="https://github.com/user-attachments/assets/cf9d56d3-4e8d-42be-9f90-fa14d6d5d8d5" />
-<img width="210" height="440" alt="Screenshot_20261106-075803_Bridge" src="https://github.com/user-attachments/assets/601191fc-e5db-4965-b574-ff621073195a" />
-</p>
 
 ## Install
 
@@ -168,6 +149,12 @@ and 10 new ones per minute, and a request expires after 2 minutes.
 A PC asks before it accepts a file from a phone or another PC, and the phone asks before it receives one. A file offer
 can be given a time limit in Settings. Text from another PC is never put on your clipboard automatically. Files are
 checked against a SHA-256 checksum, and an interrupted transfer continues where it stopped.
+
+### Phones do not see each other
+
+Every paired phone has its own conversation with the PC. The PC keeps the messages and files of each phone apart and only
+answers a phone with its own: another phone you pair later never receives earlier messages, and cannot read, download or
+delete them. Unpairing a phone deletes its conversation on the PC.
 
 ### What Bridge does not do
 

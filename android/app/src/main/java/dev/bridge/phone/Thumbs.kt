@@ -22,7 +22,8 @@ import kotlin.math.roundToInt
  */
 object Thumbs {
     private const val SHOWN_EDGE = 720
-    private const val KEPT_EDGE = 640
+    private const val KEPT_EDGE = 1280
+    private const val LARGE_EDGE = 2560
 
     private val cache = object : LruCache<String, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
@@ -97,6 +98,23 @@ object Thumbs {
         val bytes = Thumb.decode(b64) ?: return null
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     }
+
+    /** This phone has the picture itself (it sent it, or it is in Downloads/Bridge), so it can be shown large. */
+    fun canShow(context: Context, file: FileRef, savedUri: String?): Boolean =
+        isPicture(Bridge.mimeOf(file.name)) && (savedUri != null || keptFile(context, file.id).isFile)
+
+    /** The picture for the large view, up to 2560 pixels. Not cached: it is big, and only one or two are shown. */
+    fun large(context: Context, id: String, savedUri: String?): Bitmap? {
+        val kept = keptFile(context, id)
+        return when {
+            savedUri != null -> decode(ImageDecoder.createSource(context.contentResolver, Uri.parse(savedUri)), LARGE_EDGE)
+            kept.isFile -> decode(ImageDecoder.createSource(kept), LARGE_EDGE)
+            else -> null
+        }
+    }
+
+    /** The picture as the chat showed it, if it is still in memory (shown at once while the large one is read). */
+    fun sharpCached(id: String, savedUri: String?): Bitmap? = cache.get(id + "|" + (savedUri ?: ""))
 
     /** The picture itself, if this phone has it: a copy it sent, or a download in Downloads/Bridge. */
     fun sharp(context: Context, id: String, savedUri: String?): Bitmap? {

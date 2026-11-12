@@ -882,7 +882,7 @@ impl Shared {
         let stale: Vec<String> = {
             let ids: Vec<String> = lock(&self.persist).peers.keys().cloned().collect();
             let ok = lock(&self.peer.last_ok);
-            ids.into_iter().filter(|id| ok.get(id).map_or(true, |t| t.elapsed() > PROBE_AFTER)).collect()
+            ids.into_iter().filter(|id| ok.get(id).is_none_or(|t| t.elapsed() > PROBE_AFTER)).collect()
         };
         for fp in stale {
             self.probe_peer(&fp);

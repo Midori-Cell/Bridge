@@ -206,7 +206,7 @@ impl App {
                 }
                 self.hub.delete_message(c.phone, &c.id, &mid);
             }
-            MsgAction::Open(f) => self.hub.open_file(&f),
+            MsgAction::Open(f) => self.open_file(&f, &c.notes),
             MsgAction::ShowFolder(f) => self.hub.show_file(&f),
             MsgAction::OpenLink(url) => {
                 if let Err(e) = open::that_detached(&url) {
@@ -265,7 +265,7 @@ if widgets::plain(ui, "Clear list").on_hover_text("Delete the file list on this 
         let files: Vec<_> = c.list.iter().filter(|n| n.kind == bridge_core::NoteKind::File).cloned().collect();
         match common::history(ui, &files) {
             Some(HistoryAction::Copy(t)) => ui.ctx().copy_text(t),
-            Some(HistoryAction::Open(f)) => self.hub.open_file(&f),
+            Some(HistoryAction::Open(f)) => self.open_file(&f, &c.list),
             Some(HistoryAction::ShowFolder(f)) => self.hub.show_file(&f),
             None => {}
         }

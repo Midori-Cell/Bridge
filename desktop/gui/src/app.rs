@@ -121,6 +121,8 @@ pub struct App {
     pub(crate) chat_rect: Option<egui::Rect>,
     /// When each transfer entered its current state, to hide old finished ones.
     seen: HashMap<String, (TransferState, Instant)>,
+    /// A picture shown large inside the window.
+    pub(crate) viewer: Option<crate::viewer::Viewer>,
 }
 
 impl App {
@@ -142,6 +144,7 @@ impl App {
             pc_name_edit,
             sheet,
             reply_mid: None,
+            viewer: None,
             chat_h,
             jump_after: None,
             zoom_seen: zoom,
@@ -258,7 +261,7 @@ impl eframe::App for App {
         }
         // The tray icon blinks (a red dot, on and off) while a message waits.
         if self.hub.attention.load(Ordering::SeqCst) {
-            let phase = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0) / 600) % 2 == 0;
+            let phase = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0) / 600).is_multiple_of(2);
             self.keep.alert(phase);
             ctx.request_repaint_after(Duration::from_millis(600));
         } else {
@@ -309,6 +312,7 @@ impl eframe::App for App {
         self.resolve_selection(&data);
         *self.hub.open_phone.lock().unwrap_or_else(|e| e.into_inner()) = if let Sel::Phone(id) = &self.sel { Some(id.clone()) } else { None };
         self.hub.open_pc(if let Sel::Pc(id) = &self.sel { Some(id.as_str()) } else { None });
+        let viewer_input = self.viewer.is_some().then(|| crate::viewer::Input::take(&ctx));
         self.handle_drops(&ctx);
         self.handle_pasted_images(&ctx);
         self.handle_mac_window_keys(&ctx);
@@ -334,6 +338,7 @@ impl eframe::App for App {
             _ => self.welcome_page(ui),
         });
 
+        self.show_viewer(&ctx, viewer_input.unwrap_or_default());
         self.show_sheet(&ctx);
         self.show_toasts(&ctx);
         self.drop_overlay(&ctx);
@@ -476,7 +481,47 @@ impl App {
 
     /// Ctrl + mouse wheel zooms the whole window (ctrl + plus / minus is handled by egui itself).
     /// The scale is saved shortly after the user stops.
+    fn show_viewer(&mut self, ctx: &egui::Context, input: crate::viewer::Input) {
+        let Some(v) = &mut self.viewer else { return };
+        match v.show(ctx, input) {
+            Some(crate::viewer::ViewerAction::Close) => {
+                self.viewer = None;
+                crate::pictures::drop_large(ctx);
+            }
+            Some(crate::viewer::ViewerAction::Open(f)) => self.hub.open_file(&f),
+            Some(crate::viewer::ViewerAction::Folder(f)) => self.hub.show_file(&f),
+            None => {}
+        }
+    }
+
+    /// Show a file: a picture large inside the window, anything else with the system's program.
+    pub(crate) fn open_file(&mut self, f: &bridge_core::FileRef, notes: &[bridge_core::Note]) {
+        let here = f.local_path.as_deref().map(std::path::Path::new).is_some_and(|p| p.is_file());
+        if here && bridge_core::thumb::is_picture_name(&f.name) {
+            let mut pics: Vec<bridge_core::FileRef> = Vec::new();
+            for n in notes {
+                if let Some(g) = &n.file {
+                    let ok = bridge_core::thumb::is_picture_name(&g.name) && g.local_path.as_deref().map(std::path::Path::new).is_some_and(|p| p.is_file());
+                    if ok && pics.iter().all(|x| x.id != g.id) {
+                        pics.push(g.clone());
+                    }
+                }
+            }
+            if pics.iter().all(|x| x.id != f.id) {
+                pics = vec![f.clone()];
+            }
+            self.viewer = crate::viewer::Viewer::new(pics, &f.id);
+            if self.viewer.is_some() {
+                return;
+            }
+        }
+        self.hub.open_file(f);
+    }
+
     fn handle_zoom(&mut self, ctx: &egui::Context) {
+        if self.viewer.is_some() {
+            return; // the wheel zooms the picture
+        }
         // One wheel notch is a big step in egui; soften it to roughly 10 %.
         let delta = ctx.input(|i| i.zoom_delta()).powf(0.25);
         if (delta - 1.0).abs() > 1e-4 {

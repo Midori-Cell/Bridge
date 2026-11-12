@@ -97,6 +97,8 @@ fun HomeScreen(onPair: () -> Unit) {
     val time24 by Bridge.time24.collectAsState()
     var text by rememberSaveable { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<Note?>(null) }
+    // pictures shown large inside the app (the list, and which one was tapped)
+    var viewing by remember { mutableStateOf<Pair<List<FileRef>, Int>?>(null) }
     var sending by remember { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         latest?.sendFiles(context, uris)
@@ -124,6 +126,16 @@ fun HomeScreen(onPair: () -> Unit) {
     // "Clear chat" deletes the older texts on this phone only; the files below are not affected
     val hiddenUpTo = current.hiddenUpTo
     val chat = notes.filter { it.pending || it.id > hiddenUpTo }
+    // A picture the phone has (sent, or saved in Downloads/Bridge) opens large in the app; anything else as before.
+    val tapFile: (Note) -> Unit = { note ->
+        val f = note.file
+        if (f != null && !note.isOffer && Thumbs.canShow(context, f, saved[f.id])) {
+            val pics = notes.mapNotNull { n -> n.file?.takeIf { !n.isOffer && Thumbs.canShow(context, it, saved[it.id]) } }.distinctBy { it.id }
+            viewing = pics to pics.indexOfFirst { it.id == f.id }.coerceAtLeast(0)
+        } else {
+            current.tap(context, note, saved)
+        }
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(horizontal = 16.dp),
@@ -183,7 +195,7 @@ fun HomeScreen(onPair: () -> Unit) {
                                 note = note,
                                 state = fileState(note, transfers, saved, declined),
                                 time = if (note.pending) "Waiting to send" else if (note.ts > 0) timeText(note.ts, time24) else "",
-                                onTap = { current.tap(context, note, saved) },
+                                onTap = { tapFile(note) },
                                 onCopy = { copyText(context, note.text.orEmpty()) },
                                 onReply = { replyTo = note },
                                 onDelete = {
@@ -265,11 +277,12 @@ fun HomeScreen(onPair: () -> Unit) {
             if (pending.isNotEmpty() && recent.isNotEmpty()) Sep()
             recent.forEachIndexed { i, note ->
                 if (i > 0) Sep()
-                RecentRow(note, current.name, fileState(note, transfers, saved, declined), onTap = { current.tap(context, note, saved) }, onCopy = { copyText(context, note.text.orEmpty()) })
+                RecentRow(note, current.name, fileState(note, transfers, saved, declined), onTap = { tapFile(note) }, onCopy = { copyText(context, note.text.orEmpty()) })
             }
         }
         Spacer(Modifier.height(16.dp))
     }
+    viewing?.let { (pics, index) -> PictureViewer(pics, index) { viewing = null } }
 }
 
 @OptIn(ExperimentalFoundationApi::class)

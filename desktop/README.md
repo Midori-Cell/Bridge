@@ -71,7 +71,10 @@ Stop a file request that is not accepted after* withdraws the request automatica
 the other person answers).
 
 **Pictures** appear in the chat as pictures, not as file cards. A picture that was offered shows a small preview enlarged, so
-blurred, and nothing is downloaded until you click it; then it is received and shown sharp. Clicking a received picture opens it.
+blurred, and nothing is downloaded until you click it; then it is received and shown sharp. Clicking a received or sent picture
+shows it large inside Bridge: the mouse wheel zooms around the pointer, dragging moves a zoomed picture, a double-click switches
+between fitting the window and the real size, ← and → (or the round arrows) go to the other pictures of the conversation, and Esc
+or a click beside the picture closes it. The buttons at the top open it in the system's viewer or show it in its folder.
 
 **Notifications:** while the window is not in front, a new message or file (and a request to send a file or to pair) can show a
 popup from the system, play a sound and make the icon ask for attention (the taskbar button flashes, the Dock icon jumps, the tray

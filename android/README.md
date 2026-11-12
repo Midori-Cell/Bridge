@@ -34,8 +34,9 @@ has its own certificate, and from then on only that exact phone is trusted.
   *Save*, and *Delete*.
 - **Links** in messages open in your browser when you tap them.
 - **Pictures** are shown in the chat itself. A picture that was offered shows as a blurred preview with *Tap to download*;
-  nothing is downloaded until you tap it, then it is saved in Downloads/Bridge and shown sharp (tap it again to open it in
-  your gallery). *Decline* (long-press) refuses it. A file you declined cannot be fetched from the chat afterwards.
+  nothing is downloaded until you tap it, then it is saved in Downloads/Bridge and shown sharp. Tap it again to see it large in the app:
+  swipe for the other pictures, pinch or double-tap to zoom, drag to move, tap to hide the bar, Back to close. *Open in…*
+  hands it to your gallery or another app. *Decline* (long-press) refuses it. A file you declined cannot be fetched from the chat afterwards.
 - Under **FILES** below the chat, files that are waiting or on their way are listed first, then the last few; each line says
   *From* or *To* which device.
 - The row of **device chips** under the title switches between your PCs and phones; every device has its own chat and files.
