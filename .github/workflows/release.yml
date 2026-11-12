@@ -73,7 +73,7 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Tools
-        run: pacman -Syu --noconfirm git rust gtk3 libayatana-appindicator xdotool alsa-lib
+        run: pacman -Syu --noconfirm git rust gtk3 libayatana-appindicator xdotool
       - uses: actions/checkout@v4
       - name: Build with makepkg
         env:
